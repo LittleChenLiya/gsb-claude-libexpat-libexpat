@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<!DOCTYPE root [
+<!ENTITY small "0123456789">
+]>
+<root>&small;&small;</root>

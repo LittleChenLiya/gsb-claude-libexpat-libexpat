@@ -97,3 +97,5 @@ EXPORTS
   XML_SetPropertyBool @83
   XML_SetPropertyDouble @84
   XML_SetPropertyUInt64 @85
+  XML_SetEntityExpansionBudget @86
+  XML_GetEntityExpansionCount @87

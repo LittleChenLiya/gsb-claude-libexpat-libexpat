@@ -138,6 +138,9 @@ enum XML_Error {
   XML_ERROR_AMPLIFICATION_LIMIT_BREACH,
   /* Added in 2.6.4. */
   XML_ERROR_NOT_STARTED,
+  /* Added in 2.9.0. */
+  XML_ERROR_ENTITY_EXPANSION_BUDGET_EXCEEDED,
+  XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED,
 };
 
 /* Added in 2.9.0. */
@@ -1141,6 +1144,43 @@ XML_SetAllocTrackerActivationThreshold(
 /* Added in Expat 2.6.0. */
 XMLPARSEAPI(XML_Bool)
 XML_SetReparseDeferralEnabled(XML_Parser parser, XML_Bool enabled);
+
+/* Added in Expat 2.9.0.
+
+   Sets a budget, in bytes, for the cumulative expansion of internal
+   entities for the given parser, and enables budget enforcement.
+
+   While a budget is in effect:
+
+   - Every expansion of an internal entity adds the number of bytes of
+     replacement text actually expanded to a per-parser running total.
+     If the total would exceed the budget, parsing stops with error
+     XML_ERROR_ENTITY_EXPANSION_BUDGET_EXCEEDED.  The parser can then
+     be safely freed with XML_ParserFree (or reset with
+     XML_ParserReset).
+
+   - External entities are rejected outright: parsing stops with error
+     XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED before any external entity
+     handler is invoked, so no file or network access is performed.
+
+   Parsers are created without a budget by default; behavior is then
+   unchanged from previous releases.  XML_ParserReset also removes the
+   budget.
+
+   Returns XML_TRUE on success, XML_FALSE if parser is NULL.
+*/
+XMLPARSEAPI(XML_Bool)
+XML_SetEntityExpansionBudget(XML_Parser parser,
+                             unsigned long long budgetBytes);
+
+/* Added in Expat 2.9.0.
+
+   Returns the number of internal entity expansion bytes accounted so
+   far for the given parser (see XML_SetEntityExpansionBudget), or 0
+   if parser is NULL.
+*/
+XMLPARSEAPI(unsigned long long)
+XML_GetEntityExpansionCount(XML_Parser parser);
 
 /* Expat follows the semantic versioning convention.
    See https://semver.org

@@ -827,6 +827,9 @@ struct XML_ParserStruct {
 #endif
   XML_Bool m_reenter;
   unsigned m_handlerCallDepth;
+  XML_Bool m_entityExpansionBudgetEnabled;
+  unsigned long long m_entityExpansionBudget;
+  unsigned long long m_entityExpansionCount;
 };
 
 #if XML_GE == 1
@@ -1545,6 +1548,9 @@ parserInit(XML_Parser parser, const XML_Char *encodingName) {
   // Reentry can only be triggered inside m_processor calls
   parser->m_reenter = XML_FALSE;
   parser->m_handlerCallDepth = 0;
+  parser->m_entityExpansionBudgetEnabled = XML_FALSE;
+  parser->m_entityExpansionBudget = 0;
+  parser->m_entityExpansionCount = 0;
 #ifdef XML_DTD
   parser->m_isParamEntity = XML_FALSE;
   parser->m_useForeignDTD = XML_FALSE;
@@ -3008,6 +3014,12 @@ XML_ErrorString(enum XML_Error code) {
   /* Added in 2.6.4. */
   case XML_ERROR_NOT_STARTED:
     return XML_L("parser not started");
+  /* Added in 2.9.0. */
+  case XML_ERROR_ENTITY_EXPANSION_BUDGET_EXCEEDED:
+    return XML_L("entity expansion budget exceeded");
+  case XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED:
+    return XML_L(
+        "external entities not allowed while an entity expansion budget is in effect");
   }
   return NULL;
 }
@@ -3215,6 +3227,27 @@ XML_SetReparseDeferralEnabled(XML_Parser parser, XML_Bool enabled) {
   return (setReparseDeferralEnabled(parser, enabled) == XML_PROP_ERROR_NONE)
              ? XML_TRUE
              : XML_FALSE;
+}
+
+XML_Bool XMLCALL
+XML_SetEntityExpansionBudget(XML_Parser parser,
+                             unsigned long long budgetBytes) {
+  if (parser == NULL)
+    return XML_FALSE;
+
+  parser->m_entityExpansionBudgetEnabled = XML_TRUE;
+  parser->m_entityExpansionBudget = budgetBytes;
+  parser->m_entityExpansionCount = 0;
+
+  return XML_TRUE;
+}
+
+unsigned long long XMLCALL
+XML_GetEntityExpansionCount(XML_Parser parser) {
+  if (parser == NULL)
+    return 0;
+
+  return parser->m_entityExpansionCount;
 }
 
 enum XML_Prop_Error XMLCALL
@@ -3706,6 +3739,9 @@ doContent(XML_Parser parser, int startTagLevel, const ENCODING *enc,
         return XML_ERROR_RECURSIVE_ENTITY_REF;
       if (entity->notation)
         return XML_ERROR_BINARY_ENTITY_REF;
+      if (! entity->textPtr && parser->m_entityExpansionBudgetEnabled)
+        /* Reject external entities without accessing files or network */
+        return XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
       if (entity->textPtr) {
         enum XML_Error result;
         if (! parser->m_defaultExpandInternalEntities) {
@@ -5702,8 +5738,12 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
         dtd->hasParamEntityRefs = XML_TRUE;
         if (parser->m_paramEntityParsing
             && parser->m_externalEntityRefHandler) {
-          ENTITY *entity = (ENTITY *)lookup(parser, &dtd->paramEntities,
-                                            externalSubsetName, sizeof(ENTITY));
+          ENTITY *entity;
+          if (parser->m_entityExpansionBudgetEnabled)
+            /* Reject the external subset without accessing files or network */
+            return XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
+          entity = (ENTITY *)lookup(parser, &dtd->paramEntities,
+                                    externalSubsetName, sizeof(ENTITY));
           if (! entity) {
             /* The external subset name "#" will have already been
              * inserted into the hash table at the start of the
@@ -5759,8 +5799,12 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
         dtd->hasParamEntityRefs = XML_TRUE;
         if (parser->m_paramEntityParsing
             && parser->m_externalEntityRefHandler) {
-          ENTITY *entity = (ENTITY *)lookup(parser, &dtd->paramEntities,
-                                            externalSubsetName, sizeof(ENTITY));
+          ENTITY *entity;
+          if (parser->m_entityExpansionBudgetEnabled)
+            /* Reject the external subset without accessing files or network */
+            return XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
+          entity = (ENTITY *)lookup(parser, &dtd->paramEntities,
+                                    externalSubsetName, sizeof(ENTITY));
           if (! entity)
             return XML_ERROR_NO_MEMORY;
           entity->base = parser->m_curBase;
@@ -6379,6 +6423,9 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
           handleDefault = XML_FALSE;
           break;
         }
+        if (parser->m_entityExpansionBudgetEnabled)
+          /* Reject external entities without accessing files or network */
+          return XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
         if (parser->m_externalEntityRefHandler) {
           dtd->paramEntityRead = false;
           entity->open = true;
@@ -6687,6 +6734,19 @@ processEntity(XML_Parser parser, ENTITY *entity, bool betweenDecl,
               enum EntityType type) {
   OPEN_INTERNAL_ENTITY *openEntity, **openEntityList;
   OPEN_INTERNAL_ENTITY **const freeEntityList = &parser->m_freeEntities;
+
+  /* Account the actual expanded bytes of internal entities against the
+   * entity expansion budget, if one is in effect. */
+  if (parser->m_entityExpansionBudgetEnabled && entity->textPtr != NULL) {
+    const unsigned long long cost = (unsigned long long)entity->textLen;
+    /* Invariant: m_entityExpansionCount <= m_entityExpansionBudget,
+     * so the subtraction below cannot underflow. */
+    if (cost
+        > parser->m_entityExpansionBudget - parser->m_entityExpansionCount)
+      return XML_ERROR_ENTITY_EXPANSION_BUDGET_EXCEEDED;
+    parser->m_entityExpansionCount += cost;
+  }
+
   switch (type) {
   case ENTITY_INTERNAL:
     parser->m_processor = internalEntityProcessor;
@@ -7181,6 +7241,11 @@ storeEntityValue(XML_Parser parser, const ENCODING *enc,
           goto endEntityValue;
         }
         if (entity->systemId) {
+          if (parser->m_entityExpansionBudgetEnabled) {
+            /* Reject external entities without accessing files or network */
+            result = XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
+            goto endEntityValue;
+          }
           if (parser->m_externalEntityRefHandler) {
             dtd->paramEntityRead = false;
             entity->open = true;
