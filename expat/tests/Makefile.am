@@ -35,8 +35,8 @@ SUBDIRS = . benchmark
 
 AM_CPPFLAGS = @AM_CPPFLAGS@ -I$(srcdir)/../lib -DXML_TESTING
 
-check_PROGRAMS = runtests
-TESTS = runtests
+check_PROGRAMS = runtests suspend_resume_tests
+TESTS = runtests suspend_resume_tests
 
 # To support MinGW and Non-MinGW at the same time:
 LOG_DRIVER = $(srcdir)/../test-driver-wrapper.sh
@@ -63,6 +63,13 @@ runtests_SOURCES = \
 runtests_LDADD = ../lib/libtestpat.la
 
 runtests_LDFLAGS = @AM_LDFLAGS@ @LIBM@
+
+suspend_resume_tests_SOURCES = \
+    suspend_resume_tests.c
+
+suspend_resume_tests_LDADD = ../lib/libexpat.la
+
+suspend_resume_tests_LDFLAGS = @AM_LDFLAGS@
 
 EXTRA_DIST = \
     acc_tests.h \
