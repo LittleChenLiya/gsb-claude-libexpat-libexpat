@@ -3340,6 +3340,200 @@ START_TEST(test_resume_resuspended) {
 }
 END_TEST
 
+/* Simple event "receipt" log for the XML_StopParser/XML_ResumeParser
+   tests below: it records the published event sequence as text
+   (e.g. "S(doc) C(hi) E(doc) ") so that a test can assert exactly which
+   events have been published before and after a suspension, and that
+   resuming publishes only the remaining events without repeating
+   character data that was already published.  Only a single parser
+   with small chunks of XML is supported; no nested entity parsers. */
+typedef struct {
+  XML_Parser parser;
+  char log[1024];
+  size_t used;
+  XML_Char text[256]; /* character data accumulated for duplication checks */
+  size_t textUsed;
+  int startCount;
+  int charDataCount;
+  int suspendAtStart; /* suspend at the Nth start-tag, 0 = never */
+  XML_Bool suspendOnCharData; /* suspend on the first character data event */
+} EventReceipt;
+
+static void
+EventReceipt_Init(EventReceipt *receipt, XML_Parser parser) {
+  receipt->parser = parser;
+  receipt->log[0] = '\0';
+  receipt->used = 0;
+  receipt->text[0] = 0;
+  receipt->textUsed = 0;
+  receipt->startCount = 0;
+  receipt->charDataCount = 0;
+  receipt->suspendAtStart = 0;
+  receipt->suspendOnCharData = XML_FALSE;
+}
+
+static void
+EventReceipt_Append(EventReceipt *receipt, const char *entry) {
+  const size_t entryLen = strlen(entry);
+  if (receipt->used + entryLen + 1 > sizeof(receipt->log))
+    fail("Event receipt log overflow");
+  memcpy(receipt->log + receipt->used, entry, entryLen + 1);
+  receipt->used += entryLen;
+}
+
+static void XMLCALL
+receipt_start_element(void *userData, const XML_Char *name,
+                      const XML_Char **atts) {
+  EventReceipt *const receipt = (EventReceipt *)userData;
+  char entry[96];
+  UNUSED_P(atts);
+  snprintf(entry, sizeof(entry), "S(%" XML_FMT_STR ") ", name);
+  EventReceipt_Append(receipt, entry);
+  receipt->startCount++;
+  if (receipt->startCount == receipt->suspendAtStart) {
+    if (XML_StopParser(receipt->parser, XML_TRUE) != XML_STATUS_OK)
+      fail("Suspension at start event refused");
+  }
+}
+
+static void XMLCALL
+receipt_end_element(void *userData, const XML_Char *name) {
+  EventReceipt *const receipt = (EventReceipt *)userData;
+  char entry[96];
+  snprintf(entry, sizeof(entry), "E(%" XML_FMT_STR ") ", name);
+  EventReceipt_Append(receipt, entry);
+}
+
+static void XMLCALL
+receipt_character_data(void *userData, const XML_Char *s, int len) {
+  EventReceipt *const receipt = (EventReceipt *)userData;
+  char entry[96];
+  snprintf(entry, sizeof(entry), "C(%.*" XML_FMT_STR ") ", len, s);
+  EventReceipt_Append(receipt, entry);
+  if (receipt->textUsed + (size_t)len + 1
+      > sizeof(receipt->text) / sizeof(receipt->text[0]))
+    fail("Event receipt text overflow");
+  memcpy(receipt->text + receipt->textUsed, s,
+         (size_t)len * sizeof(XML_Char));
+  receipt->textUsed += (size_t)len;
+  receipt->text[receipt->textUsed] = 0;
+  receipt->charDataCount++;
+  if (receipt->suspendOnCharData) {
+    receipt->suspendOnCharData = XML_FALSE; /* suspend only once */
+    if (XML_StopParser(receipt->parser, XML_TRUE) != XML_STATUS_OK)
+      fail("Suspension at character data refused");
+  }
+}
+
+/* Test that suspending at the second start event keeps the remaining
+   input with the current parser, and that resuming publishes only the
+   remaining events (no event is published twice). */
+START_TEST(test_stop_resume_event_receipt) {
+  if (g_chunkSize != 0) {
+    // this test does not use SINGLE_BYTES, because of suspension
+    return;
+  }
+
+  const char *text = "<doc><a>tick</a><b>tock</b></doc>";
+  const char *const expectedBefore = "S(doc) S(a) ";
+  const char *const expectedAfter
+      = "S(doc) S(a) C(tick) E(a) S(b) C(tock) E(b) E(doc) ";
+  EventReceipt receipt;
+
+  EventReceipt_Init(&receipt, g_parser);
+  receipt.suspendAtStart = 2; /* pause at the second start event */
+  XML_SetUserData(g_parser, &receipt);
+  XML_SetElementHandler(g_parser, receipt_start_element, receipt_end_element);
+  XML_SetCharacterDataHandler(g_parser, receipt_character_data);
+
+  if (XML_Parse(g_parser, text, (int)strlen(text), XML_TRUE)
+      != XML_STATUS_SUSPENDED)
+    fail("Parse not suspended at second start event");
+  if (strcmp(receipt.log, expectedBefore) != 0)
+    fail("Events published before suspension mismatch");
+
+  /* The remaining input still belongs to this parser: resuming must
+     publish the remaining events without re-feeding any input. */
+  if (XML_ResumeParser(g_parser) != XML_STATUS_OK)
+    xml_failure(g_parser);
+  if (strcmp(receipt.log, expectedAfter) != 0)
+    fail("Events published after resumption mismatch");
+}
+END_TEST
+
+/* Test that character data spanning small chunks is published exactly
+   once across a suspend/resume cycle (no duplication on resume). */
+START_TEST(test_resume_cross_chunk_character_data) {
+  if (g_chunkSize != 0) {
+    // this test does its own chunking, because of suspension
+    return;
+  }
+
+  const char *text = "<doc>Hello, world!</doc>";
+  const size_t chunkSize = 2;
+  const char *const expected
+      = "C(H) C(el) C(lo) C(, ) C(wo) C(rl) C(d!) ";
+  EventReceipt receipt;
+  size_t offset = 0;
+  const size_t textLen = strlen(text);
+  int sawSuspension = 0;
+
+  EventReceipt_Init(&receipt, g_parser);
+  receipt.suspendOnCharData = XML_TRUE;
+  XML_SetUserData(g_parser, &receipt);
+  XML_SetCharacterDataHandler(g_parser, receipt_character_data);
+  /* disable reparse deferral so that the small chunks below are
+     processed (and logged) one chunk at a time */
+  if (XML_SetReparseDeferralEnabled(g_parser, XML_FALSE) != XML_STATUS_OK)
+    fail("Could not disable reparse deferral");
+
+  while (offset < textLen) {
+    const size_t left = textLen - offset;
+    const int thisChunk
+        = (int)(left < chunkSize ? left : chunkSize);
+    const int isFinal = (offset + (size_t)thisChunk == textLen);
+    enum XML_Status status
+        = XML_Parse(g_parser, text + offset, thisChunk, isFinal);
+    while (status == XML_STATUS_SUSPENDED) {
+      sawSuspension = 1;
+      status = XML_ResumeParser(g_parser);
+    }
+    if (status == XML_STATUS_ERROR)
+      xml_failure(g_parser);
+    offset += (size_t)thisChunk;
+  }
+
+  if (! sawSuspension)
+    fail("Parser never suspended on character data");
+  if (receipt.charDataCount < 2)
+    fail("Character data not split across chunks");
+  /* The receipt must hold the text exactly once: no character data
+     published before the suspension may be repeated after resumption. */
+  if (xcscmp(receipt.text, XCS("Hello, world!")) != 0)
+    fail("Character data across chunks duplicated or lost on resume");
+  if (strcmp(receipt.log, expected) != 0)
+    fail("Cross-chunk character data event sequence mismatch");
+}
+END_TEST
+
+/* Test that resuming after a terminating (non-resumable) stop is
+   rejected with a status error. */
+START_TEST(test_resume_after_terminate_rejected) {
+  const char *text = "<doc><abort/></doc>";
+
+  XML_SetStartElementHandler(g_parser, start_element_suspender);
+  if (_XML_Parse_SINGLE_BYTES(g_parser, text, (int)strlen(text), XML_TRUE)
+      != XML_STATUS_ERROR)
+    fail("Terminating stop not faulted");
+  if (XML_GetErrorCode(g_parser) != XML_ERROR_ABORTED)
+    xml_failure(g_parser);
+  if (XML_ResumeParser(g_parser) != XML_STATUS_ERROR)
+    fail("Resume after terminating stop not rejected");
+  if (XML_GetErrorCode(g_parser) != XML_ERROR_NOT_SUSPENDED)
+    fail("Resume after terminating stop gave wrong error");
+}
+END_TEST
+
 /* Test that CDATA shows up correctly through a default handler */
 START_TEST(test_cdata_default) {
   const char *text = "<doc><![CDATA[Hello\nworld]]></doc>";
@@ -7253,6 +7447,9 @@ make_basic_test_case(Suite *s) {
   tcase_add_test__if_xml_ge(tc_basic, test_reset_in_entity);
   tcase_add_test(tc_basic, test_resume_invalid_parse);
   tcase_add_test(tc_basic, test_resume_resuspended);
+  tcase_add_test(tc_basic, test_stop_resume_event_receipt);
+  tcase_add_test(tc_basic, test_resume_cross_chunk_character_data);
+  tcase_add_test(tc_basic, test_resume_after_terminate_rejected);
   tcase_add_test(tc_basic, test_cdata_default);
   tcase_add_test(tc_basic, test_subordinate_reset);
   tcase_add_test(tc_basic, test_subordinate_suspend);
