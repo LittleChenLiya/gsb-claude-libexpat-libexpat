@@ -55,6 +55,7 @@ XML_SetEndDoctypeDeclHandler@@LIBEXPAT_1.95.0
 XML_SetEndElementHandler@@LIBEXPAT_1.95.0
 XML_SetEndNamespaceDeclHandler@@LIBEXPAT_1.95.0
 XML_SetEntityDeclHandler@@LIBEXPAT_1.95.0
+XML_SetEntityExpansionBudget@@LIBEXPAT_2.9.0
 XML_SetExternalEntityRefHandlerArg@@LIBEXPAT_1.1.0
 XML_SetExternalEntityRefHandler@@LIBEXPAT_1.0.0
 XML_SetHashSalt16Bytes@@LIBEXPAT_2.8.0

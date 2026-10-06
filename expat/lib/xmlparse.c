@@ -825,6 +825,12 @@ struct XML_ParserStruct {
   MALLOC_TRACKER m_alloc_tracker;
   ENTITY_STATS m_entity_stats;
 #endif
+  /* Entity expansion budget in bytes; 0 means "no budget" (the default).
+     Both fields are only meaningful on the root parser; subparsers
+     created with XML_ExternalEntityParserCreate inherit the budget and
+     charges are accumulated on the root parser. */
+  unsigned long long m_entityExpansionBudget;
+  unsigned long long m_entityExpansionBytesUsed;
   XML_Bool m_reenter;
   unsigned m_handlerCallDepth;
 };
@@ -1565,6 +1571,9 @@ parserInit(XML_Parser parser, const XML_Char *encodingName) {
   memset(&parser->m_entity_stats, 0, sizeof(ENTITY_STATS));
   parser->m_entity_stats.debugLevel = getDebugLevel("EXPAT_ENTITY_DEBUG", 0u);
 #endif
+
+  parser->m_entityExpansionBudget = 0;
+  parser->m_entityExpansionBytesUsed = 0;
 }
 
 /* moves list of bindings to m_freeBindingList */
@@ -1720,6 +1729,7 @@ XML_ExternalEntityParserCreate(XML_Parser oldParser, const XML_Char *context,
   struct sipkey oldhash_secret_salt_128;
   XML_Bool oldhash_secret_salt_set;
   XML_Bool oldReparseDeferralEnabled;
+  unsigned long long oldEntityExpansionBudget;
 
   /* Validate the oldParser parameter before we pull everything out of it */
   if (oldParser == NULL)
@@ -1767,6 +1777,7 @@ XML_ExternalEntityParserCreate(XML_Parser oldParser, const XML_Char *context,
   oldhash_secret_salt_128 = parser->m_hash_secret_salt_128;
   oldhash_secret_salt_set = parser->m_hash_secret_salt_set;
   oldReparseDeferralEnabled = parser->m_reparseDeferralEnabled;
+  oldEntityExpansionBudget = parser->m_entityExpansionBudget;
 
 #ifdef XML_DTD
   if (! context)
@@ -1818,6 +1829,9 @@ XML_ExternalEntityParserCreate(XML_Parser oldParser, const XML_Char *context,
   parser->m_hash_secret_salt_128 = oldhash_secret_salt_128;
   parser->m_hash_secret_salt_set = oldhash_secret_salt_set;
   parser->m_reparseDeferralEnabled = oldReparseDeferralEnabled;
+  /* Inherit the budget so that nested external entities stay rejected;
+     charges are accumulated on the root parser. */
+  parser->m_entityExpansionBudget = oldEntityExpansionBudget;
   parser->m_parentParser = oldParser;
 #ifdef XML_DTD
   parser->m_paramEntityParsing = oldParamEntityParsing;
@@ -3008,6 +3022,12 @@ XML_ErrorString(enum XML_Error code) {
   /* Added in 2.6.4. */
   case XML_ERROR_NOT_STARTED:
     return XML_L("parser not started");
+  /* Added in 2.9.0. */
+  case XML_ERROR_ENTITY_EXPANSION_BUDGET_EXCEEDED:
+    return XML_L("entity expansion budget exceeded");
+  case XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED:
+    return XML_L(
+        "external entity not allowed while an entity expansion budget is active");
   }
   return NULL;
 }
@@ -3196,6 +3216,48 @@ XML_SetAllocTrackerActivationThreshold(
              : XML_FALSE;
 }
 #endif /* XML_GE == 1 */
+
+XML_Bool XMLCALL
+XML_SetEntityExpansionBudget(XML_Parser parser,
+                             unsigned long long budgetBytes) {
+  XML_Parser rootParser;
+  if (parser == NULL)
+    return XML_FALSE;
+
+  /* The budget and its counter live on the root parser. */
+  rootParser = getRootParserOf(parser, NULL);
+  rootParser->m_entityExpansionBudget = budgetBytes;
+  rootParser->m_entityExpansionBytesUsed = 0;
+
+  return XML_TRUE;
+}
+
+/* Charge bytes of internal entity expansion against the budget of the
+   root parser.  A budget of 0 means "no budget" (the default) and
+   accepts any charge. */
+static enum XML_Error
+entityExpansionBudgetCharge(XML_Parser parser, unsigned long long bytes) {
+  const XML_Parser rootParser = getRootParserOf(parser, NULL);
+  if (rootParser->m_entityExpansionBudget == 0)
+    return XML_ERROR_NONE;
+  /* m_entityExpansionBytesUsed never exceeds m_entityExpansionBudget,
+     so the subtraction below cannot underflow. */
+  if (bytes
+      > rootParser->m_entityExpansionBudget
+            - rootParser->m_entityExpansionBytesUsed)
+    return XML_ERROR_ENTITY_EXPANSION_BUDGET_EXCEEDED;
+  rootParser->m_entityExpansionBytesUsed += bytes;
+  return XML_ERROR_NONE;
+}
+
+/* While a budget is active, external entities are rejected up front so
+   that no external entity reference handler (and hence no file or
+   network access) is ever invoked. */
+static XML_Bool
+entityExpansionBudgetRejectsExternalEntities(XML_Parser parser) {
+  const XML_Parser rootParser = getRootParserOf(parser, NULL);
+  return rootParser->m_entityExpansionBudget != 0;
+}
 
 static enum XML_Prop_Error
 setReparseDeferralEnabled(XML_Parser parser, XML_Bool enabled) {
@@ -3723,6 +3785,8 @@ doContent(XML_Parser parser, int startTagLevel, const ENCODING *enc,
           return result;
       } else if (parser->m_externalEntityRefHandler) {
         const XML_Char *context;
+        if (entityExpansionBudgetRejectsExternalEntities(parser))
+          return XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
         entity->open = true;
         context = getContext(parser);
         entity->open = false;
@@ -5702,8 +5766,11 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
         dtd->hasParamEntityRefs = XML_TRUE;
         if (parser->m_paramEntityParsing
             && parser->m_externalEntityRefHandler) {
-          ENTITY *entity = (ENTITY *)lookup(parser, &dtd->paramEntities,
-                                            externalSubsetName, sizeof(ENTITY));
+          ENTITY *entity;
+          if (entityExpansionBudgetRejectsExternalEntities(parser))
+            return XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
+          entity = (ENTITY *)lookup(parser, &dtd->paramEntities,
+                                    externalSubsetName, sizeof(ENTITY));
           if (! entity) {
             /* The external subset name "#" will have already been
              * inserted into the hash table at the start of the
@@ -5759,8 +5826,11 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
         dtd->hasParamEntityRefs = XML_TRUE;
         if (parser->m_paramEntityParsing
             && parser->m_externalEntityRefHandler) {
-          ENTITY *entity = (ENTITY *)lookup(parser, &dtd->paramEntities,
-                                            externalSubsetName, sizeof(ENTITY));
+          ENTITY *entity;
+          if (entityExpansionBudgetRejectsExternalEntities(parser))
+            return XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
+          entity = (ENTITY *)lookup(parser, &dtd->paramEntities,
+                                    externalSubsetName, sizeof(ENTITY));
           if (! entity)
             return XML_ERROR_NO_MEMORY;
           entity->base = parser->m_curBase;
@@ -6380,6 +6450,8 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
           break;
         }
         if (parser->m_externalEntityRefHandler) {
+          if (entityExpansionBudgetRejectsExternalEntities(parser))
+            return XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
           dtd->paramEntityRead = false;
           entity->open = true;
           entityTrackingOnOpen(parser, entity, __LINE__);
@@ -6687,6 +6759,16 @@ processEntity(XML_Parser parser, ENTITY *entity, bool betweenDecl,
               enum EntityType type) {
   OPEN_INTERNAL_ENTITY *openEntity, **openEntityList;
   OPEN_INTERNAL_ENTITY **const freeEntityList = &parser->m_freeEntities;
+
+  /* Only internal entities reach processEntity; charge the length of
+     the replacement text against the entity expansion budget (if any). */
+  {
+    const enum XML_Error budgetError = entityExpansionBudgetCharge(
+        parser, (unsigned long long)entity->textLen);
+    if (budgetError != XML_ERROR_NONE)
+      return budgetError;
+  }
+
   switch (type) {
   case ENTITY_INTERNAL:
     parser->m_processor = internalEntityProcessor;
@@ -7182,6 +7264,10 @@ storeEntityValue(XML_Parser parser, const ENCODING *enc,
         }
         if (entity->systemId) {
           if (parser->m_externalEntityRefHandler) {
+            if (entityExpansionBudgetRejectsExternalEntities(parser)) {
+              result = XML_ERROR_EXTERNAL_ENTITY_NOT_ALLOWED;
+              goto endEntityValue;
+            }
             dtd->paramEntityRead = false;
             entity->open = true;
             entityTrackingOnOpen(parser, entity, __LINE__);

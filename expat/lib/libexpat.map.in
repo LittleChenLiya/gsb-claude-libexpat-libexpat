@@ -136,4 +136,5 @@ LIBEXPAT_2.9.0 {
   XML_SetPropertyBool;
   XML_SetPropertyDouble;
   XML_SetPropertyUInt64;
+  XML_SetEntityExpansionBudget;
 } LIBEXPAT_2.8.0;

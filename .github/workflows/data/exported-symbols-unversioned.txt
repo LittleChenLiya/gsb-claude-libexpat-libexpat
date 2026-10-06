@@ -55,6 +55,7 @@ XML_SetEndDoctypeDeclHandler
 XML_SetEndElementHandler
 XML_SetEndNamespaceDeclHandler
 XML_SetEntityDeclHandler
+XML_SetEntityExpansionBudget
 XML_SetExternalEntityRefHandler
 XML_SetExternalEntityRefHandlerArg
 XML_SetHashSalt
