@@ -311,6 +311,64 @@ XML_ParserCreate_MM(const XML_Char *encoding,
 XMLPARSEAPI(XML_Bool)
 XML_ParserReset(XML_Parser parser, const XML_Char *encoding);
 
+/* Reset configuration snapshots.
+
+   A snapshot captures the handler callbacks and the protocol encoding
+   name of a parser so that this configuration can be re-applied after
+   XML_ParserReset (which clears all handlers) has been used to prepare
+   the parser for a new document, e.g. after a failed parse.
+
+   A snapshot deliberately does NOT capture the userData pointer: the
+   caller must re-supply a fresh userData to XML_ParserResetWithConfig,
+   the old pointer is never carried over.  The unknown encoding handler
+   is not part of the snapshot either because XML_ParserReset already
+   preserves it.
+*/
+typedef struct XML_ParserConfigSnapshot XML_ParserConfigSnapshot;
+
+/* Restore option flags for XML_ParserResetWithConfig */
+#define XML_CONFIG_RESTORE_HANDLERS 0x01u
+#define XML_CONFIG_RESTORE_ENCODING 0x02u
+#define XML_CONFIG_RESTORE_ALL                                             \
+  (XML_CONFIG_RESTORE_HANDLERS | XML_CONFIG_RESTORE_ENCODING)
+
+/* Capture the current handler configuration and protocol encoding name
+   of the parser.  Returns NULL on out-of-memory or if parser is NULL.
+   The snapshot is independent of the parser and stays valid across
+   resets of that parser; free it with XML_ParserConfigSnapshotFree.
+*/
+XMLPARSEAPI(XML_ParserConfigSnapshot *)
+XML_ParserConfigSnapshotCreate(XML_Parser parser);
+
+/* Release a snapshot created by XML_ParserConfigSnapshotCreate.
+   Both arguments may be NULL, in which case nothing happens; if a
+   non-NULL snapshot is given, parser must be non-NULL as well (any
+   parser using the same memory suite, typically the one the snapshot
+   was taken from).
+*/
+XMLPARSEAPI(void)
+XML_ParserConfigSnapshotFree(XML_Parser parser,
+                             XML_ParserConfigSnapshot *snapshot);
+
+/* Reset the parser like XML_ParserReset does and then re-apply the
+   parts of the given snapshot selected by options (a bitmask of
+   XML_CONFIG_RESTORE_HANDLERS and XML_CONFIG_RESTORE_ENCODING).
+
+   userData must be a non-NULL, caller-supplied pointer; it becomes the
+   parser's new userData/handler argument.  Passing NULL refuses the
+   restore so that a stale userData pointer can never be reused.
+
+   Returns XML_TRUE on success.  On any failure (invalid parser state,
+   missing snapshot, missing userData, out-of-memory while restoring
+   the encoding) the parser is left fully cleared -- no handlers, no
+   userData -- so that no half-configured parse can run, and XML_FALSE
+   is returned.
+*/
+XMLPARSEAPI(XML_Bool)
+XML_ParserResetWithConfig(XML_Parser parser,
+                          const XML_ParserConfigSnapshot *snapshot,
+                          unsigned int options, void *userData);
+
 /* atts is array of name/value pairs, terminated by 0;
    names and values are 0 terminated.
 */

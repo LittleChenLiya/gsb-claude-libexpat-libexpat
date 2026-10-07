@@ -137,3 +137,10 @@ LIBEXPAT_2.9.0 {
   XML_SetPropertyDouble;
   XML_SetPropertyUInt64;
 } LIBEXPAT_2.8.0;
+
+LIBEXPAT_2.9.1 {
+ global:
+  XML_ParserConfigSnapshotCreate;
+  XML_ParserConfigSnapshotFree;
+  XML_ParserResetWithConfig;
+} LIBEXPAT_2.9.0;

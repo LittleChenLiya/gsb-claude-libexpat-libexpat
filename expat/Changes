@@ -21,6 +21,23 @@
 !!                                   Sebastian Pipping -- Berlin, 2026-09-22 !!
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
+Unreleased
+        New features:
+                    Add a reset configuration snapshot API:
+                    - XML_ParserConfigSnapshotCreate captures a parser's
+                      handler callbacks and protocol encoding name,
+                    - XML_ParserResetWithConfig resets the parser (like
+                      XML_ParserReset, which is unchanged) and re-applies
+                      the snapshot parts selected by the new
+                      XML_CONFIG_RESTORE_HANDLERS / XML_CONFIG_RESTORE_ENCODING
+                      option flags,
+                    - XML_ParserConfigSnapshotFree releases a snapshot.
+                    A fresh userData pointer must be supplied to every
+                    XML_ParserResetWithConfig call; the old pointer is never
+                    carried over.  Any restore failure (including a missing
+                    userData) leaves the parser fully cleared so that no
+                    half-configured parse can run.
+
 Release 2.8.5 Tue September 22 2026
         Security fixes:
            #1282  CVE-2026-93990 -- Reject high surrogates not followed by a

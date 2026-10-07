@@ -97,3 +97,7 @@ EXPORTS
   XML_SetPropertyBool @83
   XML_SetPropertyDouble @84
   XML_SetPropertyUInt64 @85
+; added with version 2.9.1
+  XML_ParserConfigSnapshotCreate @86
+  XML_ParserConfigSnapshotFree @87
+  XML_ParserResetWithConfig @88

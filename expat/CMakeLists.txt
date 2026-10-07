@@ -750,6 +750,11 @@ if(EXPAT_BUILD_TESTS)
     add_executable(benchmark tests/benchmark/benchmark.c)
     set_property(TARGET benchmark PROPERTY RUNTIME_OUTPUT_DIRECTORY tests/benchmark)
     target_link_libraries(benchmark expat)
+
+    add_executable(reset_config_tests tests/reset_config_tests.c)
+    set_property(TARGET reset_config_tests PROPERTY RUNTIME_OUTPUT_DIRECTORY tests)
+    target_link_libraries(reset_config_tests expat)
+    expat_add_test(reset_config_tests $<TARGET_FILE:reset_config_tests>)
 endif()
 
 #

@@ -1635,6 +1635,152 @@ XML_ParserReset(XML_Parser parser, const XML_Char *encodingName) {
   return XML_TRUE;
 }
 
+/* See expat.h for the contract of the snapshot API.  The snapshot holds
+   plain copies of the handler pointers plus a private copy of the
+   protocol encoding name; it never stores the userData pointer.  The
+   unknown encoding handler is not covered because XML_ParserReset
+   already preserves it.
+*/
+struct XML_ParserConfigSnapshot {
+  XML_StartElementHandler startElementHandler;
+  XML_EndElementHandler endElementHandler;
+  XML_CharacterDataHandler characterDataHandler;
+  XML_ProcessingInstructionHandler processingInstructionHandler;
+  XML_CommentHandler commentHandler;
+  XML_StartCdataSectionHandler startCdataSectionHandler;
+  XML_EndCdataSectionHandler endCdataSectionHandler;
+  XML_DefaultHandler defaultHandler;
+  XML_StartDoctypeDeclHandler startDoctypeDeclHandler;
+  XML_EndDoctypeDeclHandler endDoctypeDeclHandler;
+  XML_UnparsedEntityDeclHandler unparsedEntityDeclHandler;
+  XML_NotationDeclHandler notationDeclHandler;
+  XML_StartNamespaceDeclHandler startNamespaceDeclHandler;
+  XML_EndNamespaceDeclHandler endNamespaceDeclHandler;
+  XML_NotStandaloneHandler notStandaloneHandler;
+  XML_ExternalEntityRefHandler externalEntityRefHandler;
+  XML_SkippedEntityHandler skippedEntityHandler;
+  XML_ElementDeclHandler elementDeclHandler;
+  XML_AttlistDeclHandler attlistDeclHandler;
+  XML_EntityDeclHandler entityDeclHandler;
+  XML_XmlDeclHandler xmlDeclHandler;
+  XML_Bool defaultExpandInternalEntities;
+  XML_Char *protocolEncodingName; /* private copy; NULL when unset */
+};
+
+XML_ParserConfigSnapshot *XMLCALL
+XML_ParserConfigSnapshotCreate(XML_Parser parser) {
+  XML_ParserConfigSnapshot *snapshot;
+
+  if (parser == NULL)
+    return NULL;
+
+  snapshot = MALLOC(parser, sizeof(XML_ParserConfigSnapshot));
+  if (snapshot == NULL)
+    return NULL;
+
+  snapshot->startElementHandler = parser->m_startElementHandler;
+  snapshot->endElementHandler = parser->m_endElementHandler;
+  snapshot->characterDataHandler = parser->m_characterDataHandler;
+  snapshot->processingInstructionHandler
+      = parser->m_processingInstructionHandler;
+  snapshot->commentHandler = parser->m_commentHandler;
+  snapshot->startCdataSectionHandler = parser->m_startCdataSectionHandler;
+  snapshot->endCdataSectionHandler = parser->m_endCdataSectionHandler;
+  snapshot->defaultHandler = parser->m_defaultHandler;
+  snapshot->startDoctypeDeclHandler = parser->m_startDoctypeDeclHandler;
+  snapshot->endDoctypeDeclHandler = parser->m_endDoctypeDeclHandler;
+  snapshot->unparsedEntityDeclHandler = parser->m_unparsedEntityDeclHandler;
+  snapshot->notationDeclHandler = parser->m_notationDeclHandler;
+  snapshot->startNamespaceDeclHandler = parser->m_startNamespaceDeclHandler;
+  snapshot->endNamespaceDeclHandler = parser->m_endNamespaceDeclHandler;
+  snapshot->notStandaloneHandler = parser->m_notStandaloneHandler;
+  snapshot->externalEntityRefHandler = parser->m_externalEntityRefHandler;
+  snapshot->skippedEntityHandler = parser->m_skippedEntityHandler;
+  snapshot->elementDeclHandler = parser->m_elementDeclHandler;
+  snapshot->attlistDeclHandler = parser->m_attlistDeclHandler;
+  snapshot->entityDeclHandler = parser->m_entityDeclHandler;
+  snapshot->xmlDeclHandler = parser->m_xmlDeclHandler;
+  snapshot->defaultExpandInternalEntities
+      = parser->m_defaultExpandInternalEntities;
+
+  snapshot->protocolEncodingName = NULL;
+  if (parser->m_protocolEncodingName != NULL) {
+    snapshot->protocolEncodingName
+        = copyString(parser->m_protocolEncodingName, parser);
+    if (snapshot->protocolEncodingName == NULL) {
+      FREE(parser, snapshot);
+      return NULL;
+    }
+  }
+  return snapshot;
+}
+
+void XMLCALL
+XML_ParserConfigSnapshotFree(XML_Parser parser,
+                             XML_ParserConfigSnapshot *snapshot) {
+  if ((parser == NULL) || (snapshot == NULL))
+    return;
+  FREE(parser, (void *)snapshot->protocolEncodingName);
+  FREE(parser, snapshot);
+}
+
+XML_Bool XMLCALL
+XML_ParserResetWithConfig(XML_Parser parser,
+                          const XML_ParserConfigSnapshot *snapshot,
+                          unsigned int options, void *userData) {
+  const XML_Char *encodingName = NULL;
+
+  if ((snapshot != NULL) && ((options & XML_CONFIG_RESTORE_ENCODING) != 0))
+    encodingName = snapshot->protocolEncodingName;
+
+  /* XML_ParserReset applies the usual guards (NULL parser, calls from
+     inside a handler, external entity child parsers) and, on encoding
+     allocation failure, leaves the parser fully cleared: no
+     half-configured parsing is possible.
+  */
+  if (! XML_ParserReset(parser, encodingName))
+    return XML_FALSE;
+
+  /* userData must be re-supplied by the caller for every reset; the old
+     pointer is never carried over.  Without a snapshot or a fresh
+     userData the restore is refused and the parser stays fully cleared,
+     so a subsequent parse produces no events at all.
+  */
+  if ((snapshot == NULL) || (userData == NULL))
+    return XML_FALSE;
+
+  if ((options & XML_CONFIG_RESTORE_HANDLERS) != 0) {
+    parser->m_startElementHandler = snapshot->startElementHandler;
+    parser->m_endElementHandler = snapshot->endElementHandler;
+    parser->m_characterDataHandler = snapshot->characterDataHandler;
+    parser->m_processingInstructionHandler
+        = snapshot->processingInstructionHandler;
+    parser->m_commentHandler = snapshot->commentHandler;
+    parser->m_startCdataSectionHandler = snapshot->startCdataSectionHandler;
+    parser->m_endCdataSectionHandler = snapshot->endCdataSectionHandler;
+    parser->m_defaultHandler = snapshot->defaultHandler;
+    parser->m_startDoctypeDeclHandler = snapshot->startDoctypeDeclHandler;
+    parser->m_endDoctypeDeclHandler = snapshot->endDoctypeDeclHandler;
+    parser->m_unparsedEntityDeclHandler = snapshot->unparsedEntityDeclHandler;
+    parser->m_notationDeclHandler = snapshot->notationDeclHandler;
+    parser->m_startNamespaceDeclHandler = snapshot->startNamespaceDeclHandler;
+    parser->m_endNamespaceDeclHandler = snapshot->endNamespaceDeclHandler;
+    parser->m_notStandaloneHandler = snapshot->notStandaloneHandler;
+    parser->m_externalEntityRefHandler = snapshot->externalEntityRefHandler;
+    parser->m_skippedEntityHandler = snapshot->skippedEntityHandler;
+    parser->m_elementDeclHandler = snapshot->elementDeclHandler;
+    parser->m_attlistDeclHandler = snapshot->attlistDeclHandler;
+    parser->m_entityDeclHandler = snapshot->entityDeclHandler;
+    parser->m_xmlDeclHandler = snapshot->xmlDeclHandler;
+    parser->m_defaultExpandInternalEntities
+        = snapshot->defaultExpandInternalEntities;
+  }
+
+  parser->m_userData = userData;
+  parser->m_handlerArg = userData;
+  return XML_TRUE;
+}
+
 static XML_Bool
 parserBusy(XML_Parser parser) {
   switch (parser->m_parsingStatus.parsing) {
