@@ -136,6 +136,18 @@
                 <li>
                   <a href="#XML_ParserReset">XML_ParserReset</a>
                 </li>
+
+                <li>
+                  <a href="#XML_ResetSnapshotCreate">XML_ResetSnapshotCreate</a>
+                </li>
+
+                <li>
+                  <a href="#XML_ResetSnapshotFree">XML_ResetSnapshotFree</a>
+                </li>
+
+                <li>
+                  <a href="#XML_ParserResetWithSnapshot">XML_ParserResetWithSnapshot</a>
+                </li>
               </ul>
             </li>
 
@@ -1672,6 +1684,69 @@ XML_ParserReset(XML_Parser p,
         will return <code>XML_FALSE</code> in that case. Returns <code>XML_TRUE</code> on
         success. Your application is responsible for dealing with any memory associated
         with <a href="#userdata">user data</a>.
+      </div>
+
+      <h4 id="XML_ResetSnapshotCreate">
+        XML_ResetSnapshotCreate
+      </h4>
+
+      <pre class="fcndec">
+XML_ResetSnapshot *XMLCALL
+XML_ResetSnapshotCreate(XML_Parser parser,
+                        unsigned int options);
+</pre>
+      <div class="fcndef">
+        Capture the parts of the current per-document parser configuration
+        selected by <code>options</code> (a bitwise combination of
+        <code>XML_RESET_OPTION_HANDLERS</code> and
+        <code>XML_RESET_OPTION_ENCODING</code>) into a self-contained snapshot
+        allocated through the parser's memory handling suite. A snapshot only
+        stores plain handler function pointers and a private copy of the
+        encoding name; it never stores a <a href="#userdata">user data</a>
+        pointer. Returns <code>NULL</code> for a <code>NULL</code> parser,
+        unknown option bits, or on allocation failure. Release the snapshot
+        with <a href=
+        "#XML_ResetSnapshotFree">XML_ResetSnapshotFree</a>.
+      </div>
+
+      <h4 id="XML_ResetSnapshotFree">
+        XML_ResetSnapshotFree
+      </h4>
+
+      <pre class="fcndec">
+void XMLCALL
+XML_ResetSnapshotFree(XML_Parser parser,
+                      XML_ResetSnapshot *snapshot);
+</pre>
+      <div class="fcndef">
+        Release a snapshot created by <a href=
+        "#XML_ResetSnapshotCreate">XML_ResetSnapshotCreate</a>; passing
+        <code>NULL</code> for <code>snapshot</code> has no effect.
+      </div>
+
+      <h4 id="XML_ParserResetWithSnapshot">
+        XML_ParserResetWithSnapshot
+      </h4>
+
+      <pre class="fcndec">
+enum XML_Status XMLCALL
+XML_ParserResetWithSnapshot(XML_Parser parser,
+                            const XML_ResetSnapshot *snapshot,
+                            void *userData);
+</pre>
+      <div class="fcndef">
+        Reset the parser exactly like <a href=
+        "#XML_ParserReset">XML_ParserReset</a>, then restore the handlers
+        and/or encoding captured in <code>snapshot</code>. The snapshot does
+        not carry user data, so <code>userData</code> is the user data of the
+        new document and must not be <code>NULL</code> when the snapshot
+        contains <code>XML_RESET_OPTION_HANDLERS</code>; this prevents a stale
+        pointer from a previous document from being reused. On failure
+        (invalid arguments, a subparser, a call from inside a handler, or an
+        out-of-memory condition) <code>XML_STATUS_ERROR</code> is returned,
+        the parser error code is set, and the parser rejects all parsing until
+        a subsequent <a href="#XML_ParserReset">XML_ParserReset</a> succeeds;
+        a failed restore never leaves a half configured parser.
       </div>
 
       <h3>

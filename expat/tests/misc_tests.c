@@ -221,7 +221,7 @@ START_TEST(test_misc_version) {
   if (! versions_equal(&read_version, &parsed_version))
     fail("Version mismatch");
 
-  if (xcscmp(version_text, XCS("expat_2.8.5"))
+  if (xcscmp(version_text, XCS("expat_2.8.6"))
       != 0) /* needs bump on releases */
     fail("XML_*_VERSION in expat.h out of sync?\n");
 }
@@ -1023,6 +1023,199 @@ START_TEST(test_misc_input_2gb) {
 }
 END_TEST
 
+/* --- XML_ParserResetWithSnapshot() / XML_ResetSnapshot*() tests --- */
+
+typedef struct {
+  int startElementCount;
+  int endElementCount;
+  int characterDataCount;
+  const void *userDataSeen;
+  XML_Char lastElement[64];
+} ResetSnapshotCounters;
+
+static void XMLCALL
+reset_snapshot_start(void *userData, const XML_Char *name,
+                     const XML_Char **atts) {
+  ResetSnapshotCounters *const counters = (ResetSnapshotCounters *)userData;
+  size_t i;
+  (void)atts;
+  counters->startElementCount++;
+  counters->userDataSeen = userData;
+  for (i = 0; (i < sizeof(counters->lastElement) / sizeof(XML_Char) - 1)
+              && (name[i] != 0);
+       i++) {
+    counters->lastElement[i] = name[i];
+  }
+  counters->lastElement[i] = 0;
+}
+
+static void XMLCALL
+reset_snapshot_end(void *userData, const XML_Char *name) {
+  ResetSnapshotCounters *const counters = (ResetSnapshotCounters *)userData;
+  (void)name;
+  counters->endElementCount++;
+  counters->userDataSeen = userData;
+}
+
+static void XMLCALL
+reset_snapshot_chars(void *userData, const XML_Char *s, int len) {
+  ResetSnapshotCounters *const counters = (ResetSnapshotCounters *)userData;
+  (void)s;
+  (void)len;
+  counters->characterDataCount++;
+  counters->userDataSeen = userData;
+}
+
+/* Two small documents: the first one fails with a tag mismatch; after
+   XML_ParserResetWithSnapshot() the handlers must be back at work, a new
+   (non-stale) userData must be passed to them, and the captured encoding
+   must have been restored. */
+START_TEST(test_misc_reset_snapshot_restores_handlers_and_encoding) {
+  const char *const bad_doc = "<a><b></a></b>";
+  const char *const good_doc = "<a>x</a>";
+  ResetSnapshotCounters old_data;
+  ResetSnapshotCounters new_data;
+  XML_Parser parser = XML_ParserCreate(XCS("US-ASCII"));
+  XML_ResetSnapshot *snapshot;
+
+  assert_true(parser != NULL);
+
+  memset(&old_data, 0, sizeof(old_data));
+  memset(&new_data, 0, sizeof(new_data));
+
+  XML_SetElementHandler(parser, reset_snapshot_start, reset_snapshot_end);
+  XML_SetCharacterDataHandler(parser, reset_snapshot_chars);
+  XML_SetUserData(parser, &old_data);
+
+  // 1. The first document must fail, after which reset is allowed.
+  assert_true(XML_Parse(parser, bad_doc, (int)strlen(bad_doc), XML_TRUE)
+              == XML_STATUS_ERROR);
+  assert_true(XML_GetErrorCode(parser) == XML_ERROR_TAG_MISMATCH);
+  assert_true(old_data.startElementCount >= 2);
+
+  // 2. Snapshot handlers and encoding, then reset with a *fresh* userData.
+  snapshot = XML_ResetSnapshotCreate(
+      parser, XML_RESET_OPTION_HANDLERS | XML_RESET_OPTION_ENCODING);
+  assert_true(snapshot != NULL);
+  assert_true(snapshot->version == XML_RESET_SNAPSHOT_VERSION);
+  assert_true(snapshot->options
+              == (XML_RESET_OPTION_HANDLERS | XML_RESET_OPTION_ENCODING));
+  assert_true(snapshot->startElementHandler == reset_snapshot_start);
+  assert_true(snapshot->endElementHandler == reset_snapshot_end);
+  assert_true(snapshot->characterDataHandler == reset_snapshot_chars);
+  assert_true(xcscmp(snapshot->encoding, XCS("US-ASCII")) == 0);
+
+  assert_true(XML_ParserResetWithSnapshot(parser, snapshot, &new_data)
+              == XML_STATUS_OK);
+  assert_true(XML_GetUserData(parser) == &new_data);
+  XML_ResetSnapshotFree(parser, snapshot);
+
+  // 3. A new, correct document drives the restored handlers and must report
+  //    the new userData rather than the stale pointer from document one.
+  assert_true(XML_Parse(parser, good_doc, (int)strlen(good_doc), XML_TRUE)
+              == XML_STATUS_OK);
+  assert_true(new_data.startElementCount == 1);
+  assert_true(new_data.endElementCount == 1);
+  assert_true(new_data.characterDataCount == 1);
+  assert_true(new_data.userDataSeen == &new_data);
+  assert_true(xcscmp(new_data.lastElement, XCS("a")) == 0);
+
+  XML_ParserFree(parser);
+}
+END_TEST
+
+/* When handlers are to be restored, the caller must provide user data: a NULL
+   userData must be rejected, must not reset the configuration half way, and
+   must not deliver a single callback on a subsequent parse attempt. A later
+   XML_ParserReset() recovers the parser. */
+START_TEST(test_misc_reset_snapshot_requires_user_data_and_blocks_parse) {
+  const char *const bad_doc = "<a>";
+  const char *const good_doc = "<a/>";
+  ResetSnapshotCounters data;
+  XML_Parser parser = XML_ParserCreate(NULL);
+  XML_ResetSnapshot *snapshot;
+
+  assert_true(parser != NULL);
+  memset(&data, 0, sizeof(data));
+
+  XML_SetElementHandler(parser, reset_snapshot_start, reset_snapshot_end);
+  XML_SetCharacterDataHandler(parser, reset_snapshot_chars);
+  XML_SetUserData(parser, &data);
+
+  assert_true(XML_Parse(parser, bad_doc, (int)strlen(bad_doc), XML_TRUE)
+              == XML_STATUS_ERROR);
+  const int eventsBeforeReset = data.startElementCount;
+  assert_true(eventsBeforeReset >= 1);
+
+  snapshot = XML_ResetSnapshotCreate(parser, XML_RESET_OPTION_HANDLERS);
+  assert_true(snapshot != NULL);
+
+  // Missing user data: restore must be rejected.
+  assert_true(XML_ParserResetWithSnapshot(parser, snapshot, NULL)
+              == XML_STATUS_ERROR);
+  assert_true(XML_GetErrorCode(parser) == XML_ERROR_INVALID_ARGUMENT);
+  XML_ResetSnapshotFree(parser, snapshot);
+
+  // No half-configured parsing: attempts to parse fail with zero new events.
+  assert_true(XML_Parse(parser, good_doc, (int)strlen(good_doc), XML_TRUE)
+              == XML_STATUS_ERROR);
+  void *const buffer = XML_GetBuffer(parser, (int)strlen(good_doc));
+  assert_true(buffer == NULL);
+  assert_true(data.startElementCount == eventsBeforeReset);
+  assert_true(data.endElementCount == 0);
+
+  // The original API recovers the parser, so a new document parses (with no
+  // handlers configured, as XML_ParserReset clears them).
+  assert_true(XML_ParserReset(parser, NULL) == XML_TRUE);
+  assert_true(XML_GetUserData(parser) == NULL);
+  assert_true(XML_Parse(parser, good_doc, (int)strlen(good_doc), XML_TRUE)
+              == XML_STATUS_OK);
+  // Still zero additional events.
+  assert_true(data.startElementCount == eventsBeforeReset);
+
+  XML_ParserFree(parser);
+}
+END_TEST
+
+/* Invalid snapshot creation arguments and an encoding-only snapshot (which
+   legitimately needs no user data) behave as documented. */
+START_TEST(test_misc_reset_snapshot_invalid_arguments) {
+  XML_Parser parser = XML_ParserCreate(XCS("ISO-8859-1"));
+  XML_ResetSnapshot *snapshot;
+
+  assert_true(parser != NULL);
+
+  assert_true(XML_ResetSnapshotCreate(NULL, XML_RESET_OPTION_HANDLERS)
+              == NULL);
+  assert_true(XML_ResetSnapshotCreate(parser, 0x80000000u) == NULL);
+  // Freeing NULL is a documented no-op.
+  XML_ResetSnapshotFree(parser, NULL);
+  XML_ResetSnapshotFree(NULL, NULL);
+
+  // Restoring only the encoding must not require user data.
+  snapshot = XML_ResetSnapshotCreate(parser, XML_RESET_OPTION_ENCODING);
+  assert_true(snapshot != NULL);
+  assert_true(snapshot->options == XML_RESET_OPTION_ENCODING);
+  assert_true(xcscmp(snapshot->encoding, XCS("ISO-8859-1")) == 0);
+  assert_true(XML_ParserResetWithSnapshot(parser, snapshot, NULL)
+              == XML_STATUS_OK);
+  XML_ResetSnapshotFree(parser, snapshot);
+
+  // A bad snapshot pointer also blocks parsing until XML_ParserReset().
+  assert_true(XML_ParserResetWithSnapshot(parser, NULL, NULL)
+              == XML_STATUS_ERROR);
+  assert_true(XML_GetErrorCode(parser) == XML_ERROR_INVALID_ARGUMENT);
+  {
+    const char *const doc = "<a/>";
+    assert_true(XML_Parse(parser, doc, (int)strlen(doc), XML_TRUE)
+                == XML_STATUS_ERROR);
+  }
+  assert_true(XML_ParserReset(parser, NULL) == XML_TRUE);
+
+  XML_ParserFree(parser);
+}
+END_TEST
+
 void
 make_miscellaneous_test_case(Suite *s) {
   TCase *tc_misc = tcase_create("miscellaneous tests");
@@ -1063,4 +1256,9 @@ make_miscellaneous_test_case(Suite *s) {
                  test_misc_unknown_encoding_release_getter_parser_reset);
   tcase_add_test(tc_misc, test_misc_input_2gb);
   tcase_add_test(tc_misc, test_misc_low_surrogate_mozilla_bug_2053153);
+  tcase_add_test(tc_misc,
+                 test_misc_reset_snapshot_restores_handlers_and_encoding);
+  tcase_add_test(tc_misc,
+                 test_misc_reset_snapshot_requires_user_data_and_blocks_parse);
+  tcase_add_test(tc_misc, test_misc_reset_snapshot_invalid_arguments);
 }

@@ -123,6 +123,13 @@ LIBEXPAT_2.8.0 {
   XML_SetHashSalt16Bytes;
 } LIBEXPAT_2.7.2;
 
+LIBEXPAT_2.8.6 {
+ global:
+  XML_ResetSnapshotCreate;
+  XML_ResetSnapshotFree;
+  XML_ParserResetWithSnapshot;
+} LIBEXPAT_2.8.0;
+
 LIBEXPAT_2.9.0 {
  global:
   XML_GetCurrentByteCount64;
@@ -136,4 +143,4 @@ LIBEXPAT_2.9.0 {
   XML_SetPropertyBool;
   XML_SetPropertyDouble;
   XML_SetPropertyUInt64;
-} LIBEXPAT_2.8.0;
+} LIBEXPAT_2.8.6;

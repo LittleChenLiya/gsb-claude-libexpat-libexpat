@@ -581,6 +581,66 @@ START_TEST(test_alloc_reset_encoding) {
 }
 END_TEST
 
+/* Test robustness of XML_ResetSnapshotCreate()/XML_ParserResetWithSnapshot()
+ * against a failing allocator: snapshot creation must report failure cleanly
+ * and a later reset with an encoding (the only allocation on that path) that
+ * runs out of memory must leave the parser blocked, recoverable through
+ * XML_ParserReset(). */
+START_TEST(test_alloc_reset_snapshot) {
+  int i;
+  const int max_alloc_count = 5;
+  int dummy_user_data = 0;
+
+  for (i = 0; i < max_alloc_count; i++) {
+    XML_ResetSnapshot *snapshot;
+    g_allocation_count = i;
+    snapshot = XML_ResetSnapshotCreate(g_parser,
+                                       XML_RESET_OPTION_HANDLERS
+                                           | XML_RESET_OPTION_ENCODING);
+    if (snapshot != NULL) {
+      XML_ResetSnapshotFree(g_parser, snapshot);
+      break;
+    }
+  }
+  if (i == 0)
+    fail("Snapshot creation succeeded despite failing allocator");
+  else if (i == max_alloc_count)
+    fail("Snapshot creation failed at max allocation count");
+
+  /* Out-of-memory inside XML_ParserReset(parser, encoding). */
+  for (i = 0; i < max_alloc_count; i++) {
+    XML_ResetSnapshot *snapshot;
+    g_allocation_count = ALLOC_ALWAYS_SUCCEED;
+    if (XML_SetEncoding(g_parser, XCS("us-ascii")) != XML_STATUS_OK)
+      fail("Could not set encoding for snapshot reset OOM test");
+    snapshot = XML_ResetSnapshotCreate(g_parser,
+                                       XML_RESET_OPTION_HANDLERS
+                                           | XML_RESET_OPTION_ENCODING);
+    assert(snapshot != NULL);
+    g_allocation_count = i;
+    if (XML_ParserResetWithSnapshot(g_parser, snapshot, &dummy_user_data)
+        == XML_STATUS_OK) {
+      XML_ResetSnapshotFree(g_parser, snapshot);
+      break;
+    }
+    /* Failed restore blocks parsing and must not half configure the parser;
+       the original XML_ParserReset() (without encoding) recovers it. */
+    XML_ResetSnapshotFree(g_parser, snapshot);
+    if (XML_Parse(g_parser, "<a/>", 4, XML_TRUE) == XML_STATUS_OK)
+      fail("Parsing succeeded after failed snapshot restore");
+    if (XML_ParserReset(g_parser, NULL) != XML_TRUE)
+      fail("XML_ParserReset did not recover parser after restore failure");
+    alloc_teardown();
+    alloc_setup();
+  }
+  g_allocation_count = ALLOC_ALWAYS_SUCCEED;
+  if (i == 0)
+    fail("Snapshot reset succeeded despite failing allocator");
+  else if (i == max_alloc_count)
+    fail("Snapshot reset failed at max allocation count");
+}
+END_TEST
+
 /* Test robustness of XML_SetBase against a failing allocator */
 START_TEST(test_alloc_set_base) {
   const XML_Char *new_base = XCS("/local/file/name.xml");
@@ -2393,6 +2453,7 @@ make_alloc_test_case(Suite *s) {
   tcase_add_test__ifdef_xml_dtd(tc_alloc, test_alloc_dtd_default_handling);
   tcase_add_test(tc_alloc, test_alloc_explicit_encoding);
   tcase_add_test(tc_alloc, test_alloc_reset_encoding);
+  tcase_add_test(tc_alloc, test_alloc_reset_snapshot);
   tcase_add_test(tc_alloc, test_alloc_set_base);
   tcase_add_test(tc_alloc, test_alloc_realloc_buffer);
   tcase_add_test__if_xml_ge(tc_alloc, test_alloc_ext_entity_realloc_buffer);

@@ -1142,12 +1142,114 @@ XML_SetAllocTrackerActivationThreshold(
 XMLPARSEAPI(XML_Bool)
 XML_SetReparseDeferralEnabled(XML_Parser parser, XML_Bool enabled);
 
+/* Flags for XML_ResetSnapshot::options selecting what a snapshot restores.
+   XML_RESET_OPTION_HANDLERS restores all event handler function pointers
+   (but never user data, see XML_ParserResetWithSnapshot() below).
+   XML_RESET_OPTION_ENCODING restores the encoding name given through
+   XML_ParserCreate()/XML_SetEncoding() at the time the snapshot was taken.
+
+   Added in Expat 2.8.6.
+*/
+#  define XML_RESET_OPTION_HANDLERS 0x01u
+#  define XML_RESET_OPTION_ENCODING 0x02u
+
+#  define XML_RESET_SNAPSHOT_VERSION 1
+
+/* Maximum number of XML_Char units (excluding the terminating NUL) that an
+   encoding name captured in an XML_ResetSnapshot may occupy.
+
+   Added in Expat 2.8.6.
+*/
+#  define XML_RESET_ENCODING_MAX 255
+
+/* A self-contained snapshot of the per-document parser configuration that
+   XML_ParserReset() deliberately clears.  It only holds plain handler
+   function pointers and an internal copy of the encoding name; it never
+   holds a user data pointer, so a stale pointer from a previous document
+   can never leak through a reset.  Create snapshots with
+   XML_ResetSnapshotCreate() and release them with XML_ResetSnapshotFree().
+
+   Added in Expat 2.8.6.
+*/
+typedef struct XML_ResetSnapshot {
+  unsigned int version; /* XML_RESET_SNAPSHOT_VERSION */
+  unsigned int options; /* combination of XML_RESET_OPTION_* values */
+  XML_StartElementHandler startElementHandler;
+  XML_EndElementHandler endElementHandler;
+  XML_CharacterDataHandler characterDataHandler;
+  XML_ProcessingInstructionHandler processingInstructionHandler;
+  XML_CommentHandler commentHandler;
+  XML_StartCdataSectionHandler startCdataSectionHandler;
+  XML_EndCdataSectionHandler endCdataSectionHandler;
+  XML_DefaultHandler defaultHandler;
+  XML_StartDoctypeDeclHandler startDoctypeDeclHandler;
+  XML_EndDoctypeDeclHandler endDoctypeDeclHandler;
+  XML_UnparsedEntityDeclHandler unparsedEntityDeclHandler;
+  XML_NotationDeclHandler notationDeclHandler;
+  XML_StartNamespaceDeclHandler startNamespaceDeclHandler;
+  XML_EndNamespaceDeclHandler endNamespaceDeclHandler;
+  XML_NotStandaloneHandler notStandaloneHandler;
+  XML_ExternalEntityRefHandler externalEntityRefHandler;
+  XML_SkippedEntityHandler skippedEntityHandler;
+  XML_ElementDeclHandler elementDeclHandler;
+  XML_AttlistDeclHandler attlistDeclHandler;
+  XML_EntityDeclHandler entityDeclHandler;
+  XML_XmlDeclHandler xmlDeclHandler;
+  XML_Char encoding[XML_RESET_ENCODING_MAX + 1];
+} XML_ResetSnapshot;
+
+/* Allocates a snapshot of the handlers (and, if set, of the encoding)
+   currently configured on parser, using the parser's own memory handling
+   suite.  options selects which parts of the configuration a future call to
+   XML_ParserResetWithSnapshot() restores and must be a combination of
+   XML_RESET_OPTION_HANDLERS and XML_RESET_OPTION_ENCODING.  Returns NULL when
+   parser is NULL, when options contains unknown bits, or on allocation
+   failure.  The snapshot is independent of parser and stays valid after the
+   parser has been freed.
+
+   Added in Expat 2.8.6.
+*/
+XMLPARSEAPI(XML_ResetSnapshot *)
+XML_ResetSnapshotCreate(XML_Parser parser, unsigned int options);
+
+/* Releases a snapshot returned by XML_ResetSnapshotCreate().  Passing NULL is
+   allowed and has no effect.
+
+   Added in Expat 2.8.6.
+*/
+XMLPARSEAPI(void)
+XML_ResetSnapshotFree(XML_Parser parser, XML_ResetSnapshot *snapshot);
+
+/* Resets parser just like XML_ParserReset(), then restores the configuration
+   parts selected when snapshot was taken.
+
+   userData is the user data for the fresh document and is applied to both
+   the user data and the handler argument whenever handlers are restored.
+   The snapshot never remembers the old user data pointer, so the caller has
+   to supply it again: userData must not be NULL when the snapshot has
+   XML_RESET_OPTION_HANDLERS set.
+
+   On success returns XML_STATUS_OK and the parser is ready for a new
+   document with the restored handlers and/or encoding.  On any failure
+   (invalid arguments, a child parser, a call made from inside a handler, or
+   an out-of-memory condition while resetting) returns XML_STATUS_ERROR, sets
+   the parser error code accordingly, and keeps the parser rejecting every
+   XML_Parse()/XML_ParseBuffer()/XML_GetBuffer() call until
+   XML_ParserReset() succeeds; a failed restore never leaves a half
+   configured parser that could parse.
+
+   Added in Expat 2.8.6.
+*/
+XMLPARSEAPI(enum XML_Status)
+XML_ParserResetWithSnapshot(XML_Parser parser,
+                            const XML_ResetSnapshot *snapshot, void *userData);
+
 /* Expat follows the semantic versioning convention.
    See https://semver.org
 */
 #  define XML_MAJOR_VERSION 2
 #  define XML_MINOR_VERSION 8
-#  define XML_MICRO_VERSION 5
+#  define XML_MICRO_VERSION 6
 
 #  ifdef __cplusplus
 }

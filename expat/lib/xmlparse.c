@@ -827,6 +827,10 @@ struct XML_ParserStruct {
 #endif
   XML_Bool m_reenter;
   unsigned m_handlerCallDepth;
+  /* Set when XML_ParserResetWithSnapshot() has failed and the parser must not
+     be used for parsing until a subsequent XML_ParserReset() succeeds.  This
+     keeps a failed (partially restored) configuration from ever parsing. */
+  XML_Bool m_configRestoreBlocked;
 };
 
 #if XML_GE == 1
@@ -1545,6 +1549,7 @@ parserInit(XML_Parser parser, const XML_Char *encodingName) {
   // Reentry can only be triggered inside m_processor calls
   parser->m_reenter = XML_FALSE;
   parser->m_handlerCallDepth = 0;
+  parser->m_configRestoreBlocked = XML_FALSE;
 #ifdef XML_DTD
   parser->m_isParamEntity = XML_FALSE;
   parser->m_useForeignDTD = XML_FALSE;
@@ -1633,6 +1638,161 @@ XML_ParserReset(XML_Parser parser, const XML_Char *encodingName) {
     return XML_FALSE;
   }
   return XML_TRUE;
+}
+
+static void
+captureHandlersIntoSnapshot(XML_Parser parser, XML_ResetSnapshot *snapshot) {
+  snapshot->startElementHandler = parser->m_startElementHandler;
+  snapshot->endElementHandler = parser->m_endElementHandler;
+  snapshot->characterDataHandler = parser->m_characterDataHandler;
+  snapshot->processingInstructionHandler
+      = parser->m_processingInstructionHandler;
+  snapshot->commentHandler = parser->m_commentHandler;
+  snapshot->startCdataSectionHandler = parser->m_startCdataSectionHandler;
+  snapshot->endCdataSectionHandler = parser->m_endCdataSectionHandler;
+  snapshot->defaultHandler = parser->m_defaultHandler;
+  snapshot->startDoctypeDeclHandler = parser->m_startDoctypeDeclHandler;
+  snapshot->endDoctypeDeclHandler = parser->m_endDoctypeDeclHandler;
+  snapshot->unparsedEntityDeclHandler = parser->m_unparsedEntityDeclHandler;
+  snapshot->notationDeclHandler = parser->m_notationDeclHandler;
+  snapshot->startNamespaceDeclHandler = parser->m_startNamespaceDeclHandler;
+  snapshot->endNamespaceDeclHandler = parser->m_endNamespaceDeclHandler;
+  snapshot->notStandaloneHandler = parser->m_notStandaloneHandler;
+  snapshot->externalEntityRefHandler = parser->m_externalEntityRefHandler;
+  snapshot->skippedEntityHandler = parser->m_skippedEntityHandler;
+  snapshot->elementDeclHandler = parser->m_elementDeclHandler;
+  snapshot->attlistDeclHandler = parser->m_attlistDeclHandler;
+  snapshot->entityDeclHandler = parser->m_entityDeclHandler;
+  snapshot->xmlDeclHandler = parser->m_xmlDeclHandler;
+}
+
+static void
+restoreHandlersFromSnapshot(XML_Parser parser,
+                            const XML_ResetSnapshot *snapshot) {
+  parser->m_startElementHandler = snapshot->startElementHandler;
+  parser->m_endElementHandler = snapshot->endElementHandler;
+  parser->m_characterDataHandler = snapshot->characterDataHandler;
+  parser->m_processingInstructionHandler
+      = snapshot->processingInstructionHandler;
+  parser->m_commentHandler = snapshot->commentHandler;
+  parser->m_startCdataSectionHandler = snapshot->startCdataSectionHandler;
+  parser->m_endCdataSectionHandler = snapshot->endCdataSectionHandler;
+  parser->m_defaultHandler = snapshot->defaultHandler;
+  parser->m_startDoctypeDeclHandler = snapshot->startDoctypeDeclHandler;
+  parser->m_endDoctypeDeclHandler = snapshot->endDoctypeDeclHandler;
+  parser->m_unparsedEntityDeclHandler = snapshot->unparsedEntityDeclHandler;
+  parser->m_notationDeclHandler = snapshot->notationDeclHandler;
+  parser->m_startNamespaceDeclHandler = snapshot->startNamespaceDeclHandler;
+  parser->m_endNamespaceDeclHandler = snapshot->endNamespaceDeclHandler;
+  parser->m_notStandaloneHandler = snapshot->notStandaloneHandler;
+  parser->m_externalEntityRefHandler = snapshot->externalEntityRefHandler;
+  parser->m_skippedEntityHandler = snapshot->skippedEntityHandler;
+  parser->m_elementDeclHandler = snapshot->elementDeclHandler;
+  parser->m_attlistDeclHandler = snapshot->attlistDeclHandler;
+  parser->m_entityDeclHandler = snapshot->entityDeclHandler;
+  parser->m_xmlDeclHandler = snapshot->xmlDeclHandler;
+}
+
+XML_ResetSnapshot *XMLCALL
+XML_ResetSnapshotCreate(XML_Parser parser, unsigned int options) {
+  XML_ResetSnapshot *snapshot;
+
+  if (parser == NULL)
+    return NULL;
+
+  // Reject any option bit that this version does not know about.
+  if (options & ~(XML_RESET_OPTION_HANDLERS | XML_RESET_OPTION_ENCODING)) {
+    parser->m_errorCode = XML_ERROR_INVALID_ARGUMENT;
+    return NULL;
+  }
+
+  snapshot = MALLOC(parser, sizeof(XML_ResetSnapshot));
+  if (snapshot == NULL) {
+    parser->m_errorCode = XML_ERROR_NO_MEMORY;
+    return NULL;
+  }
+  memset(snapshot, 0, sizeof(XML_ResetSnapshot));
+
+  snapshot->version = XML_RESET_SNAPSHOT_VERSION;
+  snapshot->options = options;
+
+  if (options & XML_RESET_OPTION_HANDLERS)
+    captureHandlersIntoSnapshot(parser, snapshot);
+
+  if ((options & XML_RESET_OPTION_ENCODING)
+      && (parser->m_protocolEncodingName != NULL)) {
+    size_t i = 0;
+    while ((i < XML_RESET_ENCODING_MAX)
+           && (parser->m_protocolEncodingName[i] != 0)) {
+      snapshot->encoding[i] = parser->m_protocolEncodingName[i];
+      i++;
+    }
+    snapshot->encoding[i] = 0;
+  }
+
+  return snapshot;
+}
+
+void XMLCALL
+XML_ResetSnapshotFree(XML_Parser parser, XML_ResetSnapshot *snapshot) {
+  if (snapshot == NULL)
+    return;
+  // The snapshot owns no heap memory beyond itself; it was allocated through
+  // the parser's memory handling suite, so require the matching parser.
+  if (parser == NULL)
+    return;
+  FREE(parser, snapshot);
+}
+
+enum XML_Status XMLCALL
+XML_ParserResetWithSnapshot(XML_Parser parser,
+                            const XML_ResetSnapshot *snapshot,
+                            void *userData) {
+  const XML_Char *encodingName = NULL;
+
+  // Validate all arguments before touching parser state: a rejected restore
+  // must not leave the parser half configured.
+  if (parser == NULL)
+    return XML_STATUS_ERROR;
+
+  if ((snapshot == NULL) || (snapshot->version != XML_RESET_SNAPSHOT_VERSION)
+      || (snapshot->options
+          & ~(XML_RESET_OPTION_HANDLERS | XML_RESET_OPTION_ENCODING))) {
+    parser->m_errorCode = XML_ERROR_INVALID_ARGUMENT;
+    parser->m_configRestoreBlocked = XML_TRUE;
+    return XML_STATUS_ERROR;
+  }
+
+  // The snapshot never carries user data, so whenever handlers are restored
+  // the caller must provide fresh user data; reusing a stale (e.g. freed)
+  // pointer from the previous document is rejected outright.
+  if ((snapshot->options & XML_RESET_OPTION_HANDLERS) && (userData == NULL)) {
+    parser->m_errorCode = XML_ERROR_INVALID_ARGUMENT;
+    parser->m_configRestoreBlocked = XML_TRUE;
+    return XML_STATUS_ERROR;
+  }
+
+  if (snapshot->options & XML_RESET_OPTION_ENCODING) {
+    // An empty encoding array means "no encoding was set" at snapshot time.
+    if (snapshot->encoding[0] != 0)
+      encodingName = snapshot->encoding;
+  }
+
+  // XML_ParserReset() keeps the original semantics and error handling.
+  if (! XML_ParserReset(parser, encodingName)) {
+    // XML_ParserReset set m_errorCode; make sure no parsing can happen on the
+    // reset, partially initialized parser until another reset succeeds.
+    parser->m_configRestoreBlocked = XML_TRUE;
+    return XML_STATUS_ERROR;
+  }
+
+  if (snapshot->options & XML_RESET_OPTION_HANDLERS) {
+    restoreHandlersFromSnapshot(parser, snapshot);
+    parser->m_userData = userData;
+    parser->m_handlerArg = userData;
+  }
+
+  return XML_STATUS_OK;
 }
 
 static XML_Bool
@@ -2304,6 +2464,10 @@ XML_Parse(XML_Parser parser, const char *s, int len, int isFinal) {
   }
   if (isCalledFromInsideHandler(parser))
     return XML_STATUS_ERROR;
+  if (parser->m_configRestoreBlocked)
+    // A previous XML_ParserResetWithSnapshot() failed; the parser must be
+    // reset again (successfully) before it may parse another document.
+    return XML_STATUS_ERROR;
   switch (parser->m_parsingStatus.parsing) {
   case XML_SUSPENDED:
     parser->m_errorCode = XML_ERROR_SUSPENDED;
@@ -2416,6 +2580,12 @@ XML_ParseBuffer(XML_Parser parser, int len, int isFinal) {
   if ((parser == NULL) || isCalledFromInsideHandler(parser))
     return XML_STATUS_ERROR;
 
+  if (parser->m_configRestoreBlocked)
+    // A previous XML_ParserResetWithSnapshot() failed; refuse to parse until
+    // another XML_ParserReset() succeeds rather than run a half configured
+    // parser.
+    return XML_STATUS_ERROR;
+
   if (len < 0) {
     parser->m_errorCode = XML_ERROR_INVALID_ARGUMENT;
     return XML_STATUS_ERROR;
@@ -2520,6 +2690,11 @@ void *XMLCALL
 XML_GetBuffer(XML_Parser parser, int len) {
   if ((parser == NULL) || isCalledFromInsideHandler(parser))
     return NULL;
+  if (parser->m_configRestoreBlocked) {
+    // XML_ParserResetWithSnapshot() previously failed; parsing stays disabled
+    // until XML_ParserReset() recovers the parser.
+    return NULL;
+  }
   if (len < 0) {
     parser->m_errorCode = XML_ERROR_NO_MEMORY;
     return NULL;

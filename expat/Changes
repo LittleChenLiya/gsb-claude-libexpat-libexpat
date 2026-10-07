@@ -21,6 +21,19 @@
 !!                                   Sebastian Pipping -- Berlin, 2026-09-22 !!
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
+Release 2.8.6
+        New features:
+           lib: Add XML_ResetSnapshotCreate(), XML_ResetSnapshotFree() and
+                    XML_ParserResetWithSnapshot() to reset a parser after a
+                    failed document while restoring a previously snapshotted
+                    set of handlers and/or encoding.  User data is never
+                    carried over by a snapshot: callers have to pass fresh
+                    user data to XML_ParserResetWithSnapshot() (and passing
+                    NULL while handlers are restored is rejected).  A failed
+                    restore blocks all parsing until XML_ParserReset()
+                    succeeds, so a parser can never run half configured.
+                    XML_ParserReset() itself is unchanged.
+
 Release 2.8.5 Tue September 22 2026
         Security fixes:
            #1282  CVE-2026-93990 -- Reject high surrogates not followed by a
