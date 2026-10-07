@@ -1547,6 +1547,137 @@ START_TEST(test_dtd_attr_handling) {
 }
 END_TEST
 
+/* Tests for reporting the source (document vs DTD default) of each
+   attribute through XML_SetStartElementHandlerEx.  The atts array and
+   its order must be identical to what XML_StartElementHandler reports.
+*/
+typedef struct {
+  const XML_Char *name;
+  const XML_Char *value;
+  XML_AttributeSource source;
+} AttSourceEntry;
+
+typedef struct {
+  const AttSourceEntry *entries; /* expected, terminated by name == NULL */
+  size_t position;               /* index of next expected entry */
+  int callCount;
+} AttSourceCheck;
+
+static void XMLCALL
+verify_att_source_handler(void *userData, const XML_Char *name,
+                          const XML_Char **atts,
+                          const XML_AttributeSource *attsSource) {
+  AttSourceCheck *const check = (AttSourceCheck *)userData;
+  size_t i;
+  UNUSED_P(name);
+  check->callCount++;
+  for (i = 0; atts[i] != NULL; i += 2) {
+    const AttSourceEntry *const expected = &check->entries[check->position];
+    if (expected->name == NULL)
+      fail("More attributes reported than expected");
+    if (xcscmp(atts[i], expected->name) != 0)
+      fail("Unexpected attribute name");
+    if (xcscmp(atts[i + 1], expected->value) != 0)
+      fail("Unexpected attribute value");
+    if (attsSource[i / 2] != expected->source)
+      fail("Unexpected attribute source");
+    check->position++;
+  }
+}
+
+static void
+run_att_source_check(const char *text, const AttSourceEntry *entries,
+                     XML_Bool singleBytes) {
+  AttSourceCheck check = {entries, 0, 0};
+
+  XML_SetStartElementHandlerEx(g_parser, verify_att_source_handler);
+  XML_SetUserData(g_parser, &check);
+  if (singleBytes) {
+    if (_XML_Parse_SINGLE_BYTES(g_parser, text, (int)strlen(text), XML_TRUE)
+        == XML_STATUS_ERROR)
+      xml_failure(g_parser);
+  } else {
+    if (XML_Parse(g_parser, text, (int)strlen(text), XML_TRUE)
+        == XML_STATUS_ERROR)
+      xml_failure(g_parser);
+  }
+  if (check.callCount != 1)
+    fail("Expected exactly one start-element call");
+  if (check.entries[check.position].name != NULL)
+    fail("Fewer attributes reported than expected");
+}
+
+/* Tiny internal DTD: an explicit attribute overriding a DTD default
+   must be reported as coming from the document, while the remaining
+   default attribute must be reported as a DTD default.
+*/
+START_TEST(test_att_source_internal_dtd) {
+  const char *text = "<!DOCTYPE doc [\n"
+                     "  <!ELEMENT doc EMPTY>\n"
+                     "  <!ATTLIST doc a CDATA 'default-a' b CDATA 'default-b'>\n"
+                     "]>\n"
+                     "<doc a='explicit-a'/>";
+  const AttSourceEntry entries[]
+      = {{XCS("a"), XCS("explicit-a"), XML_ATTRIBUTE_SOURCE_DOCUMENT},
+         {XCS("b"), XCS("default-b"), XML_ATTRIBUTE_SOURCE_DTD_DEFAULT},
+         {NULL, NULL, XML_ATTRIBUTE_SOURCE_DOCUMENT}};
+
+  run_att_source_check(text, entries, XML_FALSE);
+}
+END_TEST
+
+/* All attributes coming from DTD defaults */
+START_TEST(test_att_source_all_default) {
+  const char *text = "<!DOCTYPE doc [\n"
+                     "  <!ELEMENT doc EMPTY>\n"
+                     "  <!ATTLIST doc a CDATA 'default-a' b CDATA 'default-b'>\n"
+                     "]>\n"
+                     "<doc/>";
+  const AttSourceEntry entries[]
+      = {{XCS("a"), XCS("default-a"), XML_ATTRIBUTE_SOURCE_DTD_DEFAULT},
+         {XCS("b"), XCS("default-b"), XML_ATTRIBUTE_SOURCE_DTD_DEFAULT},
+         {NULL, NULL, XML_ATTRIBUTE_SOURCE_DOCUMENT}};
+
+  run_att_source_check(text, entries, XML_FALSE);
+}
+END_TEST
+
+/* With the external DTD not read (parameter entity parsing disabled),
+   default attributes from it must not be fabricated; the explicit
+   attribute is reported as coming from the document.
+*/
+START_TEST(test_att_source_external_dtd_disabled) {
+  const char *text = "<!DOCTYPE doc SYSTEM 'doc.dtd'>\n"
+                     "<doc a='explicit-a'/>";
+  const AttSourceEntry entries[]
+      = {{XCS("a"), XCS("explicit-a"), XML_ATTRIBUTE_SOURCE_DOCUMENT},
+         {NULL, NULL, XML_ATTRIBUTE_SOURCE_DOCUMENT}};
+
+#ifdef XML_DTD
+  XML_SetParamEntityParsing(g_parser, XML_PARAM_ENTITY_PARSING_NEVER);
+#endif
+  run_att_source_check(text, entries, XML_FALSE);
+}
+END_TEST
+
+/* Chunked (byte-by-byte) parsing must report the same attribute
+   sources as single-block parsing.
+*/
+START_TEST(test_att_source_chunked) {
+  const char *text = "<!DOCTYPE doc [\n"
+                     "  <!ELEMENT doc EMPTY>\n"
+                     "  <!ATTLIST doc a CDATA 'default-a' b CDATA 'default-b'>\n"
+                     "]>\n"
+                     "<doc a='explicit-a'/>";
+  const AttSourceEntry entries[]
+      = {{XCS("a"), XCS("explicit-a"), XML_ATTRIBUTE_SOURCE_DOCUMENT},
+         {XCS("b"), XCS("default-b"), XML_ATTRIBUTE_SOURCE_DTD_DEFAULT},
+         {NULL, NULL, XML_ATTRIBUTE_SOURCE_DOCUMENT}};
+
+  run_att_source_check(text, entries, XML_TRUE);
+}
+END_TEST
+
 /* See related SF bug #673791.
    When namespace processing is enabled, setting the namespace URI for
    a prefix is not allowed; this test ensures that it *is* allowed
@@ -7210,6 +7341,10 @@ make_basic_test_case(Suite *s) {
   tcase_add_test__ifdef_xml_dtd(tc_basic, test_ext_entity_invalid_parse);
   tcase_add_test__if_xml_ge(tc_basic, test_dtd_default_handling);
   tcase_add_test(tc_basic, test_dtd_attr_handling);
+  tcase_add_test(tc_basic, test_att_source_internal_dtd);
+  tcase_add_test(tc_basic, test_att_source_all_default);
+  tcase_add_test(tc_basic, test_att_source_external_dtd_disabled);
+  tcase_add_test(tc_basic, test_att_source_chunked);
   tcase_add_test(tc_basic, test_empty_ns_without_namespaces);
   tcase_add_test(tc_basic, test_ns_in_attribute_default_without_namespaces);
   tcase_add_test(tc_basic, test_stop_parser_between_char_data_calls);

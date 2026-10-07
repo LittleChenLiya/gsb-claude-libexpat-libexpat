@@ -735,6 +735,7 @@ struct XML_ParserStruct {
   XML_Char *m_dataBuf;
   XML_Char *m_dataBufEnd;
   XML_StartElementHandler m_startElementHandler;
+  XML_StartElementHandlerEx m_startElementHandlerEx;
   XML_EndElementHandler m_endElementHandler;
   XML_CharacterDataHandler m_characterDataHandler;
   XML_ProcessingInstructionHandler m_processingInstructionHandler;
@@ -802,6 +803,7 @@ struct XML_ParserStruct {
   int m_nSpecifiedAtts;
   int m_idAttIndex;
   ATTRIBUTE *m_atts;
+  XML_AttributeSource *m_attsSource;
   NS_ATT *m_nsAtts;
   unsigned long m_nsAttsVersion;
   unsigned char m_nsAttsPower;
@@ -1405,9 +1407,17 @@ parserCreate(const XML_Char *encodingName,
     FREE(parser, parser);
     return NULL;
   }
+  parser->m_attsSource
+      = MALLOC(parser, parser->m_attsSize * sizeof(XML_AttributeSource));
+  if (parser->m_attsSource == NULL) {
+    FREE(parser, parser->m_atts);
+    FREE(parser, parser);
+    return NULL;
+  }
   parser->m_dataBuf = MALLOC(parser, INIT_DATA_BUF_SIZE * sizeof(XML_Char));
   if (parser->m_dataBuf == NULL) {
     FREE(parser, parser->m_atts);
+    FREE(parser, parser->m_attsSource);
     FREE(parser, parser);
     return NULL;
   }
@@ -1420,6 +1430,7 @@ parserCreate(const XML_Char *encodingName,
     if (parser->m_dtd == NULL) {
       FREE(parser, parser->m_dataBuf);
       FREE(parser, parser->m_atts);
+      FREE(parser, parser->m_attsSource);
       FREE(parser, parser);
       return NULL;
     }
@@ -1485,6 +1496,7 @@ parserInit(XML_Parser parser, const XML_Char *encodingName) {
   parser->m_userData = NULL;
   parser->m_handlerArg = NULL;
   parser->m_startElementHandler = NULL;
+  parser->m_startElementHandlerEx = NULL;
   parser->m_endElementHandler = NULL;
   parser->m_characterDataHandler = NULL;
   parser->m_processingInstructionHandler = NULL;
@@ -1681,6 +1693,7 @@ XML_ExternalEntityParserCreate(XML_Parser oldParser, const XML_Char *context,
   DTD *newDtd = NULL;
   DTD *oldDtd;
   XML_StartElementHandler oldStartElementHandler;
+  XML_StartElementHandlerEx oldStartElementHandlerEx;
   XML_EndElementHandler oldEndElementHandler;
   XML_CharacterDataHandler oldCharacterDataHandler;
   XML_ProcessingInstructionHandler oldProcessingInstructionHandler;
@@ -1728,6 +1741,7 @@ XML_ExternalEntityParserCreate(XML_Parser oldParser, const XML_Char *context,
   /* Stash the original parser contents on the stack */
   oldDtd = parser->m_dtd;
   oldStartElementHandler = parser->m_startElementHandler;
+  oldStartElementHandlerEx = parser->m_startElementHandlerEx;
   oldEndElementHandler = parser->m_endElementHandler;
   oldCharacterDataHandler = parser->m_characterDataHandler;
   oldProcessingInstructionHandler = parser->m_processingInstructionHandler;
@@ -1785,6 +1799,7 @@ XML_ExternalEntityParserCreate(XML_Parser oldParser, const XML_Char *context,
     return NULL;
 
   parser->m_startElementHandler = oldStartElementHandler;
+  parser->m_startElementHandlerEx = oldStartElementHandlerEx;
   parser->m_endElementHandler = oldEndElementHandler;
   parser->m_characterDataHandler = oldCharacterDataHandler;
   parser->m_processingInstructionHandler = oldProcessingInstructionHandler;
@@ -1928,6 +1943,7 @@ XML_ParserFree(XML_Parser parser) {
 #endif /* XML_DTD */
     dtdDestroy(parser->m_dtd, (XML_Bool)! parser->m_parentParser, parser);
   FREE(parser, parser->m_atts);
+  FREE(parser, parser->m_attsSource);
   FREE(parser, parser->m_groupConnector);
   // NOTE: We are avoiding FREE(..) here because parser->m_buffer
   //       is not being allocated with MALLOC(..) but with plain
@@ -2029,6 +2045,13 @@ void XMLCALL
 XML_SetStartElementHandler(XML_Parser parser, XML_StartElementHandler start) {
   if (parser != NULL)
     parser->m_startElementHandler = start;
+}
+
+void XMLCALL
+XML_SetStartElementHandlerEx(XML_Parser parser,
+                             XML_StartElementHandlerEx start) {
+  if (parser != NULL)
+    parser->m_startElementHandlerEx = start;
 }
 
 void XMLCALL
@@ -3800,7 +3823,13 @@ doContent(XML_Parser parser, int startTagLevel, const ENCODING *enc,
           = storeAtts(parser, enc, s, &(tag->name), &(tag->bindings), account);
       if (result)
         return result;
-      if (parser->m_startElementHandler) {
+      if (parser->m_startElementHandlerEx) {
+        beforeHandler(parser);
+        parser->m_startElementHandlerEx(
+            parser->m_handlerArg, tag->name.str,
+            (const XML_Char **)parser->m_atts, parser->m_attsSource);
+        afterHandler(parser);
+      } else if (parser->m_startElementHandler) {
         beforeHandler(parser);
         parser->m_startElementHandler(parser->m_handlerArg, tag->name.str,
                                       (const XML_Char **)parser->m_atts);
@@ -3829,7 +3858,14 @@ doContent(XML_Parser parser, int startTagLevel, const ENCODING *enc,
         return result;
       }
       poolFinish(&parser->m_tempPool);
-      if (parser->m_startElementHandler) {
+      if (parser->m_startElementHandlerEx) {
+        beforeHandler(parser);
+        parser->m_startElementHandlerEx(
+            parser->m_handlerArg, name.str,
+            (const XML_Char **)parser->m_atts, parser->m_attsSource);
+        afterHandler(parser);
+        noElmHandlers = XML_FALSE;
+      } else if (parser->m_startElementHandler) {
         beforeHandler(parser);
         parser->m_startElementHandler(parser->m_handlerArg, name.str,
                                       (const XML_Char **)parser->m_atts);
@@ -3837,7 +3873,7 @@ doContent(XML_Parser parser, int startTagLevel, const ENCODING *enc,
         noElmHandlers = XML_FALSE;
       }
       if (parser->m_endElementHandler) {
-        if (parser->m_startElementHandler)
+        if (parser->m_startElementHandler || parser->m_startElementHandlerEx)
           *eventPP = *eventEndPP;
         beforeHandler(parser);
         parser->m_endElementHandler(parser->m_handlerArg, name.str);
@@ -4194,6 +4230,14 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
       return XML_ERROR_NO_MEMORY;
     }
     parser->m_atts = temp;
+    XML_AttributeSource *const tempSource
+        = REALLOC(parser, parser->m_attsSource,
+                  parser->m_attsSize * sizeof(XML_AttributeSource));
+    if (tempSource == NULL) {
+      parser->m_attsSize = oldAttsSize;
+      return XML_ERROR_NO_MEMORY;
+    }
+    parser->m_attsSource = tempSource;
     if (n > oldAttsSize) {
       /* Detect and prevent integer overflow. */
       if (n > (size_t)INT_MAX)
@@ -4270,9 +4314,14 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
         attIndex++;
         nPrefixes++;
         (attId->name)[-1] = 2;
+        /* this attribute was specified in the document */
+        parser->m_attsSource[attIndex / 2 - 1] = XML_ATTRIBUTE_SOURCE_DOCUMENT;
       }
-    } else
+    } else {
       attIndex++;
+      /* this attribute was specified in the document */
+      parser->m_attsSource[attIndex / 2 - 1] = XML_ATTRIBUTE_SOURCE_DOCUMENT;
+    }
   }
 
   /* set-up for XML_GetSpecifiedAttributeCount and XML_GetIdAttributeIndex */
@@ -4301,11 +4350,17 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
           nPrefixes++;
           appAtts[attIndex++] = da->id->name;
           appAtts[attIndex++] = da->value;
+          /* this attribute was added from a DTD default */
+          parser->m_attsSource[attIndex / 2 - 1]
+              = XML_ATTRIBUTE_SOURCE_DTD_DEFAULT;
         }
       } else {
         (da->id->name)[-1] = 1;
         appAtts[attIndex++] = da->id->name;
         appAtts[attIndex++] = da->value;
+        /* this attribute was added from a DTD default */
+        parser->m_attsSource[attIndex / 2 - 1]
+            = XML_ATTRIBUTE_SOURCE_DTD_DEFAULT;
       }
     }
   }

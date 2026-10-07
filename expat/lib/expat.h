@@ -318,6 +318,28 @@ typedef void(XMLCALL *XML_StartElementHandler)(void *userData,
                                                const XML_Char *name,
                                                const XML_Char **atts);
 
+/* Indicates where an attribute reported to a start-element handler
+   came from: either explicitly specified in the document or added by
+   the parser from a DTD default value declaration.
+*/
+typedef enum {
+  XML_ATTRIBUTE_SOURCE_DOCUMENT = 0, /* specified in the document */
+  XML_ATTRIBUTE_SOURCE_DTD_DEFAULT   /* added from a DTD default */
+} XML_AttributeSource;
+
+/* Like XML_StartElementHandler, but additionally receives attsSource,
+   an array with one entry per attribute (i.e. attsSource[i] describes
+   the pair atts[2*i] and atts[2*i+1]) telling whether the attribute
+   was specified in the document or added from a DTD default.  The
+   atts array itself, and the order of its entries, is identical to
+   what XML_StartElementHandler would receive.
+*/
+typedef void(XMLCALL *XML_StartElementHandlerEx)(void *userData,
+                                                 const XML_Char *name,
+                                                 const XML_Char **atts,
+                                                 const XML_AttributeSource
+                                                     *attsSource);
+
 typedef void(XMLCALL *XML_EndElementHandler)(void *userData,
                                              const XML_Char *name);
 
@@ -580,6 +602,16 @@ XML_SetElementHandler(XML_Parser parser, XML_StartElementHandler start,
 
 XMLPARSEAPI(void)
 XML_SetStartElementHandler(XML_Parser parser, XML_StartElementHandler handler);
+
+/* Sets a start-element handler that also reports the source (document
+   vs. DTD default) of each attribute.  When this handler is set, it is
+   invoked instead of the handler set with XML_SetStartElementHandler
+   or XML_SetElementHandler; the plain handler remains compatible and
+   is used whenever no extended handler is set.
+*/
+XMLPARSEAPI(void)
+XML_SetStartElementHandlerEx(XML_Parser parser,
+                             XML_StartElementHandlerEx handler);
 
 XMLPARSEAPI(void)
 XML_SetEndElementHandler(XML_Parser parser, XML_EndElementHandler handler);
