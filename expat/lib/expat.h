@@ -318,6 +318,36 @@ typedef void(XMLCALL *XML_StartElementHandler)(void *userData,
                                                const XML_Char *name,
                                                const XML_Char **atts);
 
+/* Origin of an attribute as reported to XML_StartElementHandlerEx.
+   Added in Expat 2.9.0.
+*/
+enum XML_AttributeSource {
+  XML_ATTRIBUTE_SOURCE_EXPLICIT = 1, /* given in the document start-tag */
+  XML_ATTRIBUTE_SOURCE_DEFAULT = 2,  /* supplied from a DTD default value */
+};
+
+/* This is an extended variant of XML_StartElementHandler.  The atts
+   argument is exactly the array passed to XML_StartElementHandler; it is
+   not copied, reordered, or otherwise modified by the source reporting.
+   The sources argument is a NUL-terminated array with one entry per
+   attribute, i.e. it runs in parallel to the name/value pairs of atts:
+   sources[0] describes atts[0]/atts[1], sources[1] describes
+   atts[2]/atts[3], and so on.  Each entry is one of the values of enum
+   XML_AttributeSource:
+   - XML_ATTRIBUTE_SOURCE_EXPLICIT marks attributes that were specified
+     in the document start-tag,
+   - XML_ATTRIBUTE_SOURCE_DEFAULT marks attributes that the parser added
+     because of a default value declared in the DTD.
+   A default value declared in an external DTD subset that the parser has
+   not been asked to read is never reported here.  The array is valid
+   only for the duration of the call.
+   Added in Expat 2.9.0.
+*/
+typedef void(XMLCALL *XML_StartElementHandlerEx)(void *userData,
+                                                 const XML_Char *name,
+                                                 const XML_Char **atts,
+                                                 const unsigned char *sources);
+
 typedef void(XMLCALL *XML_EndElementHandler)(void *userData,
                                              const XML_Char *name);
 
@@ -580,6 +610,19 @@ XML_SetElementHandler(XML_Parser parser, XML_StartElementHandler start,
 
 XMLPARSEAPI(void)
 XML_SetStartElementHandler(XML_Parser parser, XML_StartElementHandler handler);
+
+/* Sets an extended start element handler.  In addition to the name/value
+   array supplied to XML_SetStartElementHandler, the handler receives a
+   parallel array identifying the source of each attribute (document or
+   DTD default).  The extended handler is independent of the regular
+   start element handler: setting one does not clear the other, and if
+   both have been set both get invoked (the regular handler first).
+   Note: If parser == NULL, the function will do nothing.
+   Added in Expat 2.9.0.
+*/
+XMLPARSEAPI(void)
+XML_SetStartElementHandlerEx(XML_Parser parser,
+                             XML_StartElementHandlerEx handler);
 
 XMLPARSEAPI(void)
 XML_SetEndElementHandler(XML_Parser parser, XML_EndElementHandler handler);

@@ -21,6 +21,17 @@
 !!                                   Sebastian Pipping -- Berlin, 2026-09-22 !!
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
+Changes not yet in a released version:
+        New features:
+           - lib: Add XML_SetStartElementHandlerEx() and
+                    XML_StartElementHandlerEx: an extended start element
+                    handler that receives a per-attribute sources array
+                    distinguishing attributes specified in the document
+                    (XML_ATTRIBUTE_SOURCE_EXPLICIT) from attributes supplied
+                    from DTD default values (XML_ATTRIBUTE_SOURCE_DEFAULT);
+                    the existing atts array, its order, and the legacy
+                    start element handler are left unchanged
+
 Release 2.8.5 Tue September 22 2026
         Security fixes:
            #1282  CVE-2026-93990 -- Reject high surrogates not followed by a

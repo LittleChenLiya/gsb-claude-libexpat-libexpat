@@ -2926,6 +2926,317 @@ START_TEST(test_attributes) {
 }
 END_TEST
 
+/* Shared expectations for the three attribute source tests below.
+   Each triplet is (attribute name, attribute value, source mark). */
+static const AttributeSourceRecord expected_explicit_override[] = {
+    {XCS("given"), XCS("yes"), XML_ATTRIBUTE_SOURCE_EXPLICIT},
+    {XCS("over"), XCS("doc"), XML_ATTRIBUTE_SOURCE_EXPLICIT},
+    {XCS("def"), XCS("dflt"), XML_ATTRIBUTE_SOURCE_DEFAULT},
+};
+
+static const AttributeSourceRecord expected_default_only[] = {
+    {XCS("def"), XCS("dflt"), XML_ATTRIBUTE_SOURCE_DEFAULT},
+};
+
+static const AttributeSourceRecord expected_external_dtd_off[] = {
+    {XCS("given"), XCS("yes"), XML_ATTRIBUTE_SOURCE_EXPLICIT},
+};
+
+static const AttributeSourceRecord expected_external_dtd_on[] = {
+    {XCS("given"), XCS("yes"), XML_ATTRIBUTE_SOURCE_EXPLICIT},
+    {XCS("extdef"), XCS("extval"), XML_ATTRIBUTE_SOURCE_DEFAULT},
+};
+
+static void
+check_attribute_source_records(const char *tag,
+                               const AttributeSourceStorage *storage,
+                               const AttributeSourceRecord *expected,
+                               size_t expected_count) {
+  char buffer[256];
+  if (storage->count != expected_count) {
+    snprintf(buffer, sizeof(buffer),
+             "%s: got %zu attributes, expected %zu", tag, storage->count,
+             expected_count);
+    fail(buffer);
+    return;
+  }
+  for (size_t i = 0; i < expected_count; i++) {
+    if (xcscmp(storage->records[i].name, expected[i].name) != 0) {
+      snprintf(buffer, sizeof(buffer), "%s: wrong name at index %zu", tag, i);
+      fail(buffer);
+      return;
+    }
+    if (xcscmp(storage->records[i].value, expected[i].value) != 0) {
+      snprintf(buffer, sizeof(buffer), "%s: wrong value at index %zu", tag, i);
+      fail(buffer);
+      return;
+    }
+    if (storage->records[i].source != expected[i].source) {
+      snprintf(buffer, sizeof(buffer),
+               "%s: wrong source at index %zu", tag, i);
+      fail(buffer);
+      return;
+    }
+  }
+}
+
+/* Parse text in one shot, then byte by byte, and compare the source
+   records; both delivery modes must report identical names, values and
+   sources. */
+static void
+parse_and_check_attribute_sources(
+    const char *tag, const char *text, const AttributeSourceRecord *expected,
+    size_t expected_count, XML_Bool set_param_entity_parsing_never) {
+  for (int split = 0; split < 2; split++) {
+    XML_Parser parser = XML_ParserCreate(NULL);
+    AttributeSourceStorage storage;
+    assert_true(parser != NULL);
+    AttributeSourceStorage_Init(&storage);
+    XML_SetStartElementHandlerEx(parser, attribute_source_start_handler);
+    XML_SetUserData(parser, &storage);
+    if (set_param_entity_parsing_never) {
+      XML_SetExternalEntityRefHandler(parser, external_entity_null_loader);
+      assert_true(XML_SetParamEntityParsing(
+                      parser, XML_PARAM_ENTITY_PARSING_NEVER)
+                  != 0);
+    }
+    enum XML_Status status;
+    if (split == 0) {
+      status = XML_Parse(parser, text, (int)strlen(text), XML_TRUE);
+    } else {
+      status
+          = _XML_Parse_SINGLE_BYTES(parser, text, (int)strlen(text), XML_TRUE);
+    }
+    if (status == XML_STATUS_ERROR)
+      xml_failure(parser);
+    assert_true(storage.elementCount == 1);
+    check_attribute_source_records(tag, &storage, expected, expected_count);
+    AttributeSourceStorage_Free(&storage);
+    XML_ParserFree(parser);
+  }
+}
+
+/* Tiny internal DTD: explicit attributes, an explicit override of a
+   defaulted attribute, and an untouched DTD default. */
+START_TEST(test_attribute_sources_explicit_override) {
+  const char *text
+      = "<!DOCTYPE doc [\n"
+        "<!ELEMENT doc EMPTY>\n"
+        "<!ATTLIST doc given CDATA #IMPLIED\n"
+        "               over CDATA 'dtd'\n"
+        "               def CDATA 'dflt'>\n"
+        "]>\n"
+        "<doc given='yes' over='doc'/>";
+  parse_and_check_attribute_sources(
+      "explicit override", text, expected_explicit_override,
+      sizeof(expected_explicit_override)
+          / sizeof(expected_explicit_override[0]),
+      XML_FALSE);
+}
+END_TEST
+
+/* Tiny internal DTD: no attributes in the document, all come from
+   DTD defaults. */
+START_TEST(test_attribute_sources_default_only) {
+  const char *text
+      = "<!DOCTYPE doc [\n"
+        "<!ELEMENT doc EMPTY>\n"
+        "<!ATTLIST doc def CDATA 'dflt'>\n"
+        "]>\n"
+        "<doc/>";
+  parse_and_check_attribute_sources(
+      "default only", text, expected_default_only,
+      sizeof(expected_default_only) / sizeof(expected_default_only[0]),
+      XML_FALSE);
+}
+END_TEST
+
+/* Element without any attributes: the sources array must still be a
+   valid NUL-terminated vector. */
+START_TEST(test_attribute_sources_none) {
+  const char *text
+      = "<!DOCTYPE doc [\n"
+        "<!ELEMENT doc EMPTY>\n"
+        "]>\n"
+        "<doc/>";
+  parse_and_check_attribute_sources("none", text, NULL, 0, XML_FALSE);
+}
+END_TEST
+
+/* External DTD subset disabled: defaults declared in the unread
+   external subset must not be fabricated; explicit attributes remain
+   explicit. */
+START_TEST(test_attribute_sources_external_dtd_off) {
+  const char *text
+      = "<!DOCTYPE doc SYSTEM 'external.dtd' [\n"
+        "<!ELEMENT doc EMPTY>\n"
+        "<!ATTLIST doc given CDATA #IMPLIED>\n"
+        "]>\n"
+        "<doc given='yes'/>";
+  parse_and_check_attribute_sources(
+      "external dtd off", text, expected_external_dtd_off,
+      sizeof(expected_external_dtd_off) / sizeof(expected_external_dtd_off[0]),
+      XML_TRUE);
+}
+END_TEST
+
+/* Positive control for the external DTD case: when the external subset
+   is actually parsed via an external entity handler, defaults declared
+   there are reported as DTD defaults, in one shot and byte by byte. */
+
+typedef struct externalDtdFixture {
+  ExtOption *options;
+  AttributeSourceStorage storage;
+} ExternalDtdFixture;
+
+static void XMLCALL
+external_dtd_start(void *userData, const XML_Char *name,
+                   const XML_Char **atts, const unsigned char *sources) {
+  ExternalDtdFixture *fixture = (ExternalDtdFixture *)userData;
+  attribute_source_start_handler(&fixture->storage, name, atts, sources);
+}
+
+static int XMLCALL
+external_dtd_entity_handler(XML_Parser parser, const XML_Char *context,
+                            const XML_Char *base, const XML_Char *systemId,
+                            const XML_Char *publicId) {
+  ExternalDtdFixture *fixture = XML_GetUserData(parser);
+  /* external_entity_optioner() reads the options from parser userData,
+     so temporarily pass it that pointer. */
+  XML_SetUserData(parser, fixture->options);
+  const int result = external_entity_optioner(parser, context, base, systemId,
+                                               publicId);
+  XML_SetUserData(parser, fixture);
+  return result;
+}
+
+static void
+parse_external_dtd_enabled_and_check(const char *tag) {
+  static const char *const external_dtd_text
+      = "<!ATTLIST doc extdef CDATA 'extval'>\n";
+  const char *text
+      = "<!DOCTYPE doc SYSTEM 'external.dtd' [\n"
+        "<!ELEMENT doc EMPTY>\n"
+        "<!ATTLIST doc given CDATA #IMPLIED>\n"
+        "]>\n"
+        "<doc given='yes'/>";
+  ExtOption options[]
+      = {{XCS("external.dtd"), external_dtd_text}, {NULL, NULL}};
+
+  for (int split = 0; split < 2; split++) {
+    XML_Parser parser = XML_ParserCreate(NULL);
+    assert_true(parser != NULL);
+    ExternalDtdFixture fixture;
+    fixture.options = options;
+    AttributeSourceStorage_Init(&fixture.storage);
+    XML_SetStartElementHandlerEx(parser, external_dtd_start);
+    XML_SetExternalEntityRefHandler(parser, external_dtd_entity_handler);
+    XML_SetUserData(parser, &fixture);
+    assert_true(
+        XML_SetParamEntityParsing(parser, XML_PARAM_ENTITY_PARSING_ALWAYS)
+        != 0);
+
+    enum XML_Status status;
+    if (split == 0)
+      status = XML_Parse(parser, text, (int)strlen(text), XML_TRUE);
+    else
+      status = _XML_Parse_SINGLE_BYTES(parser, text, (int)strlen(text),
+                                       XML_TRUE);
+    if (status == XML_STATUS_ERROR)
+      xml_failure(parser);
+    check_attribute_source_records(tag, &fixture.storage,
+                                   expected_external_dtd_on,
+                                   sizeof(expected_external_dtd_on)
+                                       / sizeof(expected_external_dtd_on[0]));
+    AttributeSourceStorage_Free(&fixture.storage);
+    XML_ParserFree(parser);
+  }
+}
+
+START_TEST(test_attribute_sources_external_dtd_on) {
+  parse_external_dtd_enabled_and_check("external dtd on");
+}
+END_TEST
+
+static const AttributeSourceRecord expected_given_and_default[] = {
+    {XCS("given"), XCS("yes"), XML_ATTRIBUTE_SOURCE_EXPLICIT},
+    {XCS("def"), XCS("dflt"), XML_ATTRIBUTE_SOURCE_DEFAULT},
+};
+
+/* The extended handler must coexist with the regular start element
+   handler: both fire on the same element, and the regular handler
+   continues to see the untouched atts array. */
+typedef struct bothHandlersData {
+  int legacyStarts;
+  int legacyAttributeCount;
+  AttributeSourceStorage *sources;
+} BothHandlersData;
+
+static void XMLCALL
+legacy_counting_start(void *userData, const XML_Char *name,
+                      const XML_Char **atts) {
+  BothHandlersData *data = (BothHandlersData *)userData;
+  UNUSED_P(name);
+  data->legacyStarts++;
+  while (atts[0] != NULL) {
+    data->legacyAttributeCount++;
+    atts += 2;
+  }
+}
+
+static void XMLCALL
+explicit_extended_start(void *userData, const XML_Char *name,
+                        const XML_Char **atts, const unsigned char *sources) {
+  BothHandlersData *data = (BothHandlersData *)userData;
+  attribute_source_start_handler(data->sources, name, atts, sources);
+}
+
+START_TEST(test_attribute_sources_handler_compatibility) {
+  const char *text
+      = "<!DOCTYPE doc [\n"
+        "<!ELEMENT doc EMPTY>\n"
+        "<!ATTLIST doc def CDATA 'dflt'>\n"
+        "]>\n"
+        "<doc given='yes'/>";
+  XML_Parser parser = XML_ParserCreate(NULL);
+  assert_true(parser != NULL);
+  AttributeSourceStorage storage;
+  AttributeSourceStorage_Init(&storage);
+  BothHandlersData data = {0, 0, &storage};
+
+  /* Both handlers set simultaneously: both must run. */
+  XML_SetStartElementHandler(parser, legacy_counting_start);
+  XML_SetStartElementHandlerEx(parser, explicit_extended_start);
+  XML_SetUserData(parser, &data);
+  if (XML_Parse(parser, text, (int)strlen(text), XML_TRUE) == XML_STATUS_ERROR)
+    xml_failure(parser);
+  assert_true(data.legacyStarts == 1);
+  assert_true(data.legacyAttributeCount == 2);
+  check_attribute_source_records("compatibility", &storage,
+                                 expected_given_and_default, 2);
+
+  /* With the extended handler left NULL, only the regular handler must
+     run (i.e. the extended handler is an independent, opt-in feature). */
+  XML_Parser parser2 = XML_ParserCreate(NULL);
+  assert_true(parser2 != NULL);
+  AttributeSourceStorage_Free(&storage);
+  memset(&data, 0, sizeof(data));
+  data.sources = &storage;
+  XML_SetStartElementHandler(parser2, legacy_counting_start);
+  XML_SetUserData(parser2, &data);
+  if (XML_Parse(parser2, text, (int)strlen(text), XML_TRUE)
+      == XML_STATUS_ERROR)
+    xml_failure(parser2);
+  assert_true(data.legacyStarts == 1);
+  assert_true(data.legacyAttributeCount == 2);
+  assert_true(storage.count == 0);
+
+  AttributeSourceStorage_Free(&storage);
+  XML_ParserFree(parser2);
+  XML_ParserFree(parser);
+}
+END_TEST
+
 START_TEST(test_duplicate_cdata_attribute) {
   /*
   https://www.w3.org/TR/xml/#attdecls
@@ -7240,6 +7551,14 @@ make_basic_test_case(Suite *s) {
   tcase_add_test__ifdef_xml_dtd(tc_basic, test_empty_foreign_dtd);
   tcase_add_test(tc_basic, test_set_base);
   tcase_add_test(tc_basic, test_attributes);
+  tcase_add_test(tc_basic, test_attribute_sources_explicit_override);
+  tcase_add_test(tc_basic, test_attribute_sources_default_only);
+  tcase_add_test(tc_basic, test_attribute_sources_none);
+  tcase_add_test__ifdef_xml_dtd(tc_basic,
+                                test_attribute_sources_external_dtd_off);
+  tcase_add_test__ifdef_xml_dtd(tc_basic,
+                                test_attribute_sources_external_dtd_on);
+  tcase_add_test(tc_basic, test_attribute_sources_handler_compatibility);
   tcase_add_test(tc_basic, test_duplicate_cdata_attribute);
   tcase_add_test(tc_basic, test_duplicate_id_attribute_1);
   tcase_add_test(tc_basic, test_duplicate_id_attribute_2);

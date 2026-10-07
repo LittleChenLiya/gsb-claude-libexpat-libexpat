@@ -176,6 +176,10 @@
                 </li>
 
                 <li>
+                  <a href="#XML_SetStartElementHandlerEx">XML_SetStartElementHandlerEx</a>
+                </li>
+
+                <li>
                   <a href="#XML_SetEndElementHandler">XML_SetEndElementHandler</a>
                 </li>
 
@@ -2086,6 +2090,44 @@ typedef void
         <p>
           Note that an empty tag generates a call to both start and end handlers (in that
           order).
+        </p>
+      </div>
+
+      <div class="handler">
+        <h4 id="XML_SetStartElementHandlerEx">
+          XML_SetStartElementHandlerEx
+        </h4>
+
+        <pre class="setter">
+void XMLCALL
+XML_SetStartElementHandlerEx(XML_Parser p,
+                             XML_StartElementHandlerEx start);
+</pre>
+
+        <pre class="signature">
+enum XML_AttributeSource {
+  XML_ATTRIBUTE_SOURCE_EXPLICIT,
+  XML_ATTRIBUTE_SOURCE_DEFAULT,
+};
+
+typedef void
+(XMLCALL *XML_StartElementHandlerEx)(void *userData,
+                                     const XML_Char *name,
+                                     const XML_Char **atts,
+                                     const unsigned char *sources);
+</pre>
+        <p>
+          Like <a href="#XML_SetStartElementHandler">XML_SetStartElementHandler</a>,
+          but additionally receives a NUL-terminated <code>sources</code> array with one
+          entry per attribute, running in parallel to the name/value pairs of
+          <code>atts</code>. An entry of <code>XML_ATTRIBUTE_SOURCE_EXPLICIT</code> marks an
+          attribute that was specified in the document start tag; an entry of
+          <code>XML_ATTRIBUTE_SOURCE_DEFAULT</code> marks an attribute supplied by the
+          parser from a default value declared in the DTD. The <code>atts</code> array
+          itself and the order of its entries are unchanged. A default declared in an
+          external DTD subset that is not read is never reported. This handler is
+          independent of the regular start element handler; if both are set, both are
+          invoked, the regular one first. Added in Expat 2.9.0.
         </p>
       </div>
 

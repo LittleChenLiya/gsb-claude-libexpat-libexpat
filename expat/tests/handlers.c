@@ -54,6 +54,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
@@ -165,6 +166,54 @@ counting_start_element_handler(void *userData, const XML_Char *name,
 
   // Self-test that the test case's list of expected attributes is complete
   assert_true(atts[0] == NULL);
+}
+
+void
+AttributeSourceStorage_Init(AttributeSourceStorage *storage) {
+  storage->records = NULL;
+  storage->count = 0;
+  storage->capacity = 0;
+  storage->elementCount = 0;
+}
+
+void
+AttributeSourceStorage_Free(AttributeSourceStorage *storage) {
+  free(storage->records);
+  AttributeSourceStorage_Init(storage);
+}
+
+void XMLCALL
+attribute_source_start_handler(void *userData, const XML_Char *name,
+                               const XML_Char **atts,
+                               const unsigned char *sources) {
+  AttributeSourceStorage *const storage = (AttributeSourceStorage *)userData;
+  UNUSED_P(name);
+
+  for (size_t i = 0; atts[2 * i] != NULL; i++) {
+    if (storage->count == storage->capacity) {
+      size_t new_capacity = storage->capacity ? 2 * storage->capacity : 8;
+      AttributeSourceRecord *const new_records
+          = realloc(storage->records,
+                    new_capacity * sizeof(AttributeSourceRecord));
+      if (new_records == NULL) {
+        fail("Out of memory while recording attribute sources");
+        return;
+      }
+      storage->records = new_records;
+      storage->capacity = new_capacity;
+    }
+    storage->records[storage->count].name = atts[2 * i];
+    storage->records[storage->count].value = atts[2 * i + 1];
+    storage->records[storage->count].source = sources[i];
+    storage->count++;
+  }
+
+  /* The source array must have exactly one terminating entry per
+     element and only contain known marks. */
+  assert_true(sources[0] == XML_ATTRIBUTE_SOURCE_EXPLICIT
+              || sources[0] == XML_ATTRIBUTE_SOURCE_DEFAULT
+              || sources[0] == 0);
+  storage->elementCount++;
 }
 
 void XMLCALL

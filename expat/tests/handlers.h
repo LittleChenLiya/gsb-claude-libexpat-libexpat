@@ -102,6 +102,28 @@ extern void XMLCALL counting_start_element_handler(void *userData,
                                                    const XML_Char *name,
                                                    const XML_Char **atts);
 
+/* Records for XML_SetStartElementHandlerEx: one entry per attribute
+   per start element, capturing name, value and reported source. */
+typedef struct attributeSourceRecord {
+  const XML_Char *name;
+  const XML_Char *value;
+  unsigned char source;
+} AttributeSourceRecord;
+
+typedef struct attributeSourceStorage {
+  AttributeSourceRecord *records;
+  size_t count;
+  size_t capacity;
+  size_t elementCount;
+} AttributeSourceStorage;
+
+extern void AttributeSourceStorage_Init(AttributeSourceStorage *storage);
+extern void AttributeSourceStorage_Free(AttributeSourceStorage *storage);
+
+extern void XMLCALL attribute_source_start_handler(
+    void *userData, const XML_Char *name, const XML_Char **atts,
+    const unsigned char *sources);
+
 extern void XMLCALL suspending_end_handler(void *userData, const XML_Char *s);
 
 extern void XMLCALL start_element_suspender(void *userData,
